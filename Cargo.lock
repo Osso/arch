@@ -83,11 +83,19 @@ version = "0.1.0"
 dependencies = [
  "alpm",
  "anyhow",
+ "authd-escalate",
  "clap",
  "libsystemd",
  "nix",
  "pacmanconf",
  "tempfile",
+]
+
+[[package]]
+name = "authd-escalate"
+version = "0.1.0"
+dependencies = [
+ "nix",
 ]
 
 [[package]]
