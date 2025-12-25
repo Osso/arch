@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 
 /// Remove packages and their dependencies
 pub fn run(packages: &[String]) -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
@@ -76,7 +76,7 @@ pub fn run(packages: &[String]) -> Result<()> {
 
 /// Remove orphaned packages (installed as dependencies but no longer needed)
 pub fn autoremove() -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
@@ -158,7 +158,7 @@ pub fn autoremove() -> Result<()> {
 
 /// Mark packages as explicitly installed (manual)
 pub fn mark_manual(packages: &[String]) -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let handle = alpm_handle::init()?;
 
@@ -182,7 +182,7 @@ pub fn mark_manual(packages: &[String]) -> Result<()> {
 
 /// Mark packages as dependencies (auto)
 pub fn mark_auto(packages: &[String]) -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let handle = alpm_handle::init()?;
 

@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 
 /// Install packages (always syncs and upgrades first for safety)
 pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
@@ -110,7 +110,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
 /// Upgrade all packages
 pub fn upgrade() -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);

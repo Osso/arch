@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 pub fn run(directory: Option<PathBuf>) -> Result<()> {
-    super::check_root()?;
+    super::ensure_root()?;
 
     let dir = directory.unwrap_or_else(|| PathBuf::from("."));
 
