@@ -29,4 +29,4 @@ path = "src/fakeroot_main.rs"
 
 [[bin]]
 name = "arch-makepkg"
-path = "src/makepkg_main.rs"
+path = "src/makepkg/main.rs"
