@@ -1,3 +1,4 @@
+pub mod fakeroot;
 mod parse;
 mod pkginfo;
 mod runner;

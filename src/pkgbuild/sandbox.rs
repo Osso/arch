@@ -1,43 +1,9 @@
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Context, Result};
 
-/// Fakeroot daemon handle - kills daemon on drop
-struct Fakeroot {
-    key: String,
-    daemon: Child,
-}
-
-impl Fakeroot {
-    fn start() -> Result<Self> {
-        let mut daemon = Command::new("faked")
-            .stdout(Stdio::piped())
-            .spawn()
-            .context("Failed to start faked daemon")?;
-
-        // Read KEY:PID from stdout
-        let stdout = daemon.stdout.take().context("No stdout from faked")?;
-        let mut output = String::new();
-        std::io::Read::read_to_string(&mut std::io::BufReader::new(stdout), &mut output)?;
-
-        let key = output
-            .split(':')
-            .next()
-            .context("Invalid faked output")?
-            .trim()
-            .to_string();
-
-        Ok(Self { key, daemon })
-    }
-}
-
-impl Drop for Fakeroot {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
+use super::fakeroot::run_sandboxed_with_fakeroot;
 
 pub struct Sandbox<'a> {
     source_dir: &'a Path,
@@ -58,13 +24,8 @@ impl<'a> Sandbox<'a> {
         self
     }
 
-    pub fn command(&self, script: &str, fakeroot_key: &str) -> Command {
+    fn build_bwrap_command(&self) -> Command {
         let mut cmd = Command::new("bwrap");
-
-        // Fakeroot environment (set inside sandbox)
-        cmd.args(["--setenv", "FAKEROOTKEY", fakeroot_key]);
-        cmd.args(["--setenv", "LD_LIBRARY_PATH", "/usr/lib/libfakeroot"]);
-        cmd.args(["--setenv", "LD_PRELOAD", "libfakeroot.so"]);
 
         // Read-only system directories
         cmd.args(["--ro-bind", "/usr", "/usr"]);
@@ -168,30 +129,19 @@ impl<'a> Sandbox<'a> {
         // Die when parent dies (cleanup on error)
         cmd.arg("--die-with-parent");
 
-        // Run bash with script (fakeroot env is set by run())
-        cmd.args(["--", "bash", "-c", script]);
+        // Bind our own binary so it can be executed as the fakeroot tracer
+        if let Ok(exe) = std::env::current_exe() {
+            let exe_str = exe.to_string_lossy();
+            cmd.args(["--ro-bind", &exe_str, &exe_str]);
+        }
 
         cmd
     }
 
     pub fn run(&self, script: &str) -> Result<()> {
-        // Start faked daemon (runs on host, communicates via SysV message queue)
-        let fakeroot = Fakeroot::start()?;
-
-        let status = self
-            .command(script, &fakeroot.key)
-            .status()
-            .context("Failed to run sandboxed command")?;
-
-        // fakeroot daemon is killed on drop
-
-        if !status.success() {
-            anyhow::bail!(
-                "Sandboxed command failed with exit code {}",
-                status.code().unwrap_or(-1)
-            );
-        }
-
+        let bwrap_cmd = self.build_bwrap_command();
+        run_sandboxed_with_fakeroot(bwrap_cmd, script)
+            .context("Sandboxed command failed")?;
         Ok(())
     }
 }

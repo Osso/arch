@@ -171,6 +171,11 @@ enum MarkAction {
 }
 
 fn main() -> Result<()> {
+    // Check if we're running as fakeroot tracer inside sandbox
+    if pkgbuild::fakeroot::maybe_run_as_tracer() {
+        return Ok(());
+    }
+
     // Reset SIGPIPE to default behavior (silent exit) to avoid panics when piping to head/less
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
