@@ -33,13 +33,17 @@ const SYS_FCHOWNAT: u64 = 260;
 const SYS_NEWFSTATAT: u64 = 262;
 const SYS_STATX: u64 = 332;
 
-// Offset of st_uid/st_gid in struct stat (x86_64)
+// Offsets in struct stat (x86_64)
+const STAT_MODE_OFFSET: usize = 24;
 const STAT_UID_OFFSET: usize = 28;
 const STAT_GID_OFFSET: usize = 32;
+const STAT_INO_OFFSET: usize = 8;
 
-// Offset of stx_uid/stx_gid in struct statx (x86_64)
+// Offsets in struct statx (x86_64)
+const STATX_MODE_OFFSET: usize = 18;
 const STATX_UID_OFFSET: usize = 20;
 const STATX_GID_OFFSET: usize = 24;
+const STATX_INO_OFFSET: usize = 80;
 
 /// Tracks whether we're at syscall entry or exit for each process
 #[derive(Default)]
@@ -47,6 +51,12 @@ struct TracerState {
     in_syscall: HashSet<i32>,
     pending_stat: HashMap<i32, u64>,
     pending_statx: HashMap<i32, u64>,
+    /// Pending chmod: pid -> (path_addr, mode)
+    pending_chmod: HashMap<i32, (u64, u32)>,
+    /// Pending fchmod: pid -> (fd, mode)
+    pending_fchmod: HashMap<i32, (i32, u32)>,
+    /// Faked modes by inode
+    fake_modes: HashMap<u64, u32>,
 }
 
 fn main() -> Result<()> {
@@ -146,8 +156,31 @@ fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
                 regs.rax = 0;
                 modified = true;
             }
-            SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT
-            | SYS_CHMOD | SYS_FCHMOD | SYS_FCHMODAT => {
+            SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT => {
+                if (regs.rax as i64) < 0 {
+                    regs.rax = 0;
+                    modified = true;
+                }
+            }
+            SYS_CHMOD | SYS_FCHMODAT => {
+                // Track the faked mode by getting the inode
+                if let Some((path_addr, mode)) = state.pending_chmod.remove(&pid_raw) {
+                    if let Some(ino) = get_inode_from_path(pid, path_addr) {
+                        state.fake_modes.insert(ino, mode);
+                    }
+                }
+                if (regs.rax as i64) < 0 {
+                    regs.rax = 0;
+                    modified = true;
+                }
+            }
+            SYS_FCHMOD => {
+                // Track the faked mode by getting inode from fd
+                if let Some((fd, mode)) = state.pending_fchmod.remove(&pid_raw) {
+                    if let Some(ino) = get_inode_from_fd(pid, fd) {
+                        state.fake_modes.insert(ino, mode);
+                    }
+                }
                 if (regs.rax as i64) < 0 {
                     regs.rax = 0;
                     modified = true;
@@ -156,14 +189,14 @@ fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
             SYS_STAT | SYS_FSTAT | SYS_LSTAT | SYS_NEWFSTATAT => {
                 if regs.rax == 0 {
                     if let Some(buf) = state.pending_stat.remove(&pid_raw) {
-                        modify_stat_buffer(pid, buf, STAT_UID_OFFSET, STAT_GID_OFFSET)?;
+                        modify_stat_result(pid, buf, &state.fake_modes, false)?;
                     }
                 }
             }
             SYS_STATX => {
                 if regs.rax == 0 {
                     if let Some(buf) = state.pending_statx.remove(&pid_raw) {
-                        modify_stat_buffer(pid, buf, STATX_UID_OFFSET, STATX_GID_OFFSET)?;
+                        modify_stat_result(pid, buf, &state.fake_modes, true)?;
                     }
                 }
             }
@@ -187,18 +220,53 @@ fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
             SYS_STATX => {
                 state.pending_statx.insert(pid_raw, regs.r8);
             }
+            SYS_CHMOD => {
+                // chmod(path, mode) - rdi=path, rsi=mode
+                state.pending_chmod.insert(pid_raw, (regs.rdi, regs.rsi as u32));
+            }
+            SYS_FCHMODAT => {
+                // fchmodat(dirfd, path, mode, flags) - rdi=dirfd, rsi=path, rdx=mode
+                state.pending_chmod.insert(pid_raw, (regs.rsi, regs.rdx as u32));
+            }
+            SYS_FCHMOD => {
+                // fchmod(fd, mode) - rdi=fd, rsi=mode
+                state.pending_fchmod.insert(pid_raw, (regs.rdi as i32, regs.rsi as u32));
+            }
             _ => {}
         }
     }
     Ok(())
 }
 
-fn modify_stat_buffer(pid: Pid, buf: u64, uid_off: usize, gid_off: usize) -> Result<()> {
+/// Modify stat result: fake uid/gid to 0, apply faked mode if tracked
+fn modify_stat_result(pid: Pid, buf: u64, fake_modes: &HashMap<u64, u32>, is_statx: bool) -> Result<()> {
     if buf == 0 {
         return Ok(());
     }
+
+    let (uid_off, gid_off, ino_off, mode_off) = if is_statx {
+        (STATX_UID_OFFSET, STATX_GID_OFFSET, STATX_INO_OFFSET, STATX_MODE_OFFSET)
+    } else {
+        (STAT_UID_OFFSET, STAT_GID_OFFSET, STAT_INO_OFFSET, STAT_MODE_OFFSET)
+    };
+
+    // Fake uid/gid to 0
     write_u32(pid, buf + uid_off as u64, 0)?;
     write_u32(pid, buf + gid_off as u64, 0)?;
+
+    // Check if we have a faked mode for this inode
+    if let Some(ino) = read_u64(pid, buf + ino_off as u64) {
+        if let Some(&mode) = fake_modes.get(&ino) {
+            if is_statx {
+                // statx uses u16 for mode
+                write_u16(pid, buf + mode_off as u64, mode as u16)?;
+            } else {
+                // stat uses u32 for mode
+                write_u32(pid, buf + mode_off as u64, mode)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -215,4 +283,81 @@ fn write_u32(pid: Pid, addr: u64, value: u32) -> Result<()> {
     ptrace::write(pid, word_addr as *mut libc::c_void, u64::from_ne_bytes(bytes) as c_long)
         .context("ptrace write failed")?;
     Ok(())
+}
+
+fn write_u16(pid: Pid, addr: u64, value: u16) -> Result<()> {
+    let word_addr = addr & !7;
+    let offset = (addr & 7) as usize;
+
+    let current = ptrace::read(pid, word_addr as *mut libc::c_void)
+        .context("ptrace read failed")? as u64;
+
+    let mut bytes = current.to_ne_bytes();
+    bytes[offset..offset + 2].copy_from_slice(&value.to_ne_bytes());
+
+    ptrace::write(pid, word_addr as *mut libc::c_void, u64::from_ne_bytes(bytes) as c_long)
+        .context("ptrace write failed")?;
+    Ok(())
+}
+
+fn read_u64(pid: Pid, addr: u64) -> Option<u64> {
+    let word_addr = addr & !7;
+    let offset = (addr & 7) as usize;
+
+    let word = ptrace::read(pid, word_addr as *mut libc::c_void).ok()? as u64;
+    let bytes = word.to_ne_bytes();
+
+    // If aligned, just return. If not, we need to read next word too.
+    if offset == 0 {
+        Some(word)
+    } else {
+        let next = ptrace::read(pid, (word_addr + 8) as *mut libc::c_void).ok()? as u64;
+        let next_bytes = next.to_ne_bytes();
+        let mut result = [0u8; 8];
+        result[..8 - offset].copy_from_slice(&bytes[offset..]);
+        result[8 - offset..].copy_from_slice(&next_bytes[..offset]);
+        Some(u64::from_ne_bytes(result))
+    }
+}
+
+/// Read a null-terminated string from tracee memory
+fn read_string(pid: Pid, mut addr: u64) -> Option<String> {
+    let mut bytes = Vec::new();
+    loop {
+        let word = ptrace::read(pid, addr as *mut libc::c_void).ok()? as u64;
+        let word_bytes = word.to_ne_bytes();
+        for &b in &word_bytes {
+            if b == 0 {
+                return String::from_utf8(bytes).ok();
+            }
+            bytes.push(b);
+            if bytes.len() > 4096 {
+                return None; // Path too long
+            }
+        }
+        addr += 8;
+    }
+}
+
+/// Get inode of a file by reading path from tracee and stat'ing from tracer
+fn get_inode_from_path(pid: Pid, path_addr: u64) -> Option<u64> {
+    let path = read_string(pid, path_addr)?;
+    // Read the cwd of the tracee via /proc
+    let cwd = std::fs::read_link(format!("/proc/{}/cwd", pid.as_raw())).ok()?;
+    let full_path = if path.starts_with('/') {
+        std::path::PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+    let meta = std::fs::metadata(&full_path).ok()?;
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.ino())
+}
+
+/// Get inode of a file by fd from tracee
+fn get_inode_from_fd(pid: Pid, fd: i32) -> Option<u64> {
+    let fd_path = format!("/proc/{}/fd/{}", pid.as_raw(), fd);
+    let meta = std::fs::metadata(&fd_path).ok()?;
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.ino())
 }

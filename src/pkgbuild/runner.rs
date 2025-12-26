@@ -65,12 +65,12 @@ export pkgrel="{pkgrel}"
 # Rustup: point to sandboxed location
 export RUSTUP_HOME="/opt/rustup"
 
-# Cargo: use temp dir for writable state, symlink to cached registry/git
-export CARGO_HOME="/tmp/.cargo"
-mkdir -p "$CARGO_HOME"
+# Cargo: use the bound ~/.cargo
+export CARGO_HOME="/opt/cargo"
 [[ -d /opt/cargo/bin ]] && export PATH="/opt/cargo/bin:$PATH"
-[[ -d /opt/cargo/registry && ! -e "$CARGO_HOME/registry" ]] && ln -s /opt/cargo/registry "$CARGO_HOME/registry"
-[[ -d /opt/cargo/git && ! -e "$CARGO_HOME/git" ]] && ln -s /opt/cargo/git "$CARGO_HOME/git"
+
+# Add arch helper binaries to PATH
+export PATH="/opt/arch:$PATH"
 
 # Create pkg directory
 mkdir -p "$pkgdir"
@@ -87,28 +87,9 @@ cat > "$pkgdir/.PKGINFO" << 'PKGINFO_EOF'
 PKGINFO_EOF
 sed -i "s/__SIZE__/$SIZE/" "$pkgdir/.PKGINFO"
 
-# Create .MTREE and package archive
-cd "$pkgdir"
-
+# Create package archive using arch-makepkg
 echo ':: Creating package...'
-echo '  Generating .MTREE and archive...'
-
-# Create .MTREE (paths without ./ prefix for compatibility)
-find . -mindepth 1 ! -name '.MTREE' -printf '%P\0' | sort -z | \
-    bsdtar --create --file - --format=mtree \
-        --options '!all,use-set,type,uid,gid,mode,time,size,sha256,link' \
-        --null --files-from - --no-recursion | \
-    gzip -c -n > .MTREE
-
-# Create package archive
-{{
-    [[ -f .PKGINFO ]] && echo .PKGINFO
-    [[ -f .BUILDINFO ]] && echo .BUILDINFO
-    [[ -f .MTREE ]] && echo .MTREE
-    [[ -f .INSTALL ]] && echo .INSTALL
-    [[ -f .CHANGELOG ]] && echo .CHANGELOG
-    find . -mindepth 1 ! -name '.PKGINFO' ! -name '.BUILDINFO' ! -name '.MTREE' ! -name '.INSTALL' ! -name '.CHANGELOG' -printf '%P\n' | sort
-}} | bsdtar --create --file - --files-from - --no-recursion | zstd -c -T0 --ultra -20 > "/dest/{filename}"
+arch-makepkg "$pkgdir" "/dest/{filename}"
 "#,
             pkgbase = self.pkgbuild.pkgbase,
             pkgname = self.pkgbuild.package_name(),

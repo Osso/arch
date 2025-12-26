@@ -94,22 +94,10 @@ impl<'a> Sandbox<'a> {
                 cmd.args(["--ro-bind", &rustup, "/opt/rustup"]);
             }
 
-            // Cargo bin directory -> /opt/cargo/bin
-            let cargo_bin = format!("{}/.cargo/bin", home);
-            if Path::new(&cargo_bin).exists() {
-                cmd.args(["--ro-bind", &cargo_bin, "/opt/cargo/bin"]);
-            }
-
-            // Cargo registry (read-only cache) -> /opt/cargo/registry
-            let cargo_registry = format!("{}/.cargo/registry", home);
-            if Path::new(&cargo_registry).exists() {
-                cmd.args(["--ro-bind", &cargo_registry, "/opt/cargo/registry"]);
-            }
-
-            // Cargo git checkouts (read-only cache) -> /opt/cargo/git
-            let cargo_git = format!("{}/.cargo/git", home);
-            if Path::new(&cargo_git).exists() {
-                cmd.args(["--ro-bind", &cargo_git, "/opt/cargo/git"]);
+            // Cargo home (writable for registry updates, downloads, etc.)
+            let cargo_home = format!("{}/.cargo", home);
+            if Path::new(&cargo_home).exists() {
+                cmd.args(["--bind", &cargo_home, "/opt/cargo"]);
             }
         }
 
