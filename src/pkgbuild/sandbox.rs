@@ -129,12 +129,6 @@ impl<'a> Sandbox<'a> {
         // Die when parent dies (cleanup on error)
         cmd.arg("--die-with-parent");
 
-        // Bind our own binary so it can be executed as the fakeroot tracer
-        if let Ok(exe) = std::env::current_exe() {
-            let exe_str = exe.to_string_lossy();
-            cmd.args(["--ro-bind", &exe_str, &exe_str]);
-        }
-
         cmd
     }
 

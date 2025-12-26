@@ -18,3 +18,7 @@ tempfile = "3"
 [[bin]]
 name = "arch"
 path = "src/main.rs"
+
+[[bin]]
+name = "arch-fakeroot"
+path = "src/fakeroot_main.rs"

@@ -1,4 +1,4 @@
-pub mod fakeroot;
+pub(crate) mod fakeroot;
 mod parse;
 mod pkginfo;
 mod runner;
