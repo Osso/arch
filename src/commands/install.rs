@@ -91,7 +91,8 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     }
 
     // Set up transaction flags
-    let flags = if reinstall {
+    // Force reinstall for local packages (user explicitly built/specified them)
+    let flags = if reinstall || !local_files.is_empty() {
         TransFlag::NONE
     } else {
         TransFlag::NEEDED
