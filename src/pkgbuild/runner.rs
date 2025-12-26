@@ -62,16 +62,6 @@ export pkgname="{pkgname}"
 export pkgver="{pkgver}"
 export pkgrel="{pkgrel}"
 
-# Rustup: point to sandboxed location
-export RUSTUP_HOME="/opt/rustup"
-
-# Cargo: use the bound ~/.cargo
-export CARGO_HOME="/opt/cargo"
-[[ -d /opt/cargo/bin ]] && export PATH="/opt/cargo/bin:$PATH"
-
-# Add arch helper binaries to PATH
-export PATH="/opt/arch:$PATH"
-
 # Create pkg directory
 mkdir -p "$pkgdir"
 

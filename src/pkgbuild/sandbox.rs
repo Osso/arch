@@ -85,22 +85,6 @@ impl<'a> Sandbox<'a> {
         // Empty /home - no access to user data
         cmd.args(["--tmpfs", "/home"]);
 
-        // Bind build tools read-only under /opt (not /home)
-        let home = std::env::var("HOME").unwrap_or_default();
-        if !home.is_empty() {
-            // Rustup toolchains -> /opt/rustup
-            let rustup = format!("{}/.rustup", home);
-            if Path::new(&rustup).exists() {
-                cmd.args(["--ro-bind", &rustup, "/opt/rustup"]);
-            }
-
-            // Cargo home (writable for registry updates, downloads, etc.)
-            let cargo_home = format!("{}/.cargo", home);
-            if Path::new(&cargo_home).exists() {
-                cmd.args(["--bind", &cargo_home, "/opt/cargo"]);
-            }
-        }
-
         // Source directory -> /src (writable for build artifacts)
         let source_dir_str = self.source_dir.to_string_lossy();
         cmd.args(["--bind", &source_dir_str, "/src"]);
