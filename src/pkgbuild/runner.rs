@@ -6,21 +6,16 @@ use super::sandbox::Sandbox;
 use super::types::Pkgbuild;
 
 pub struct BuildContext {
-    pub build_dir: PathBuf,
-    pub srcdir: PathBuf,
-    pub pkgdir: PathBuf,
+    pub source_dir: PathBuf,
+    pub pkg_dir: PathBuf,
     pub pkgbuild: Pkgbuild,
 }
 
 impl BuildContext {
-    pub fn new(build_dir: PathBuf, pkgbuild: Pkgbuild) -> Self {
-        let srcdir = build_dir.join("src");
-        let pkgdir = build_dir.join("pkg");
-
+    pub fn new(source_dir: PathBuf, pkg_dir: PathBuf, pkgbuild: Pkgbuild) -> Self {
         Self {
-            build_dir,
-            srcdir,
-            pkgdir,
+            source_dir,
+            pkg_dir,
             pkgbuild,
         }
     }
@@ -29,35 +24,34 @@ impl BuildContext {
         let script = format!(
             r#"
 set -e
-export srcdir="{srcdir}"
-export pkgdir="{pkgdir}"
-export startdir="{build_dir}"
+export srcdir="{source_dir}"
+export pkgdir="{pkg_dir}"
+export startdir="{source_dir}"
 export pkgbase="{pkgbase}"
 export pkgname="{pkgname}"
 export pkgver="{pkgver}"
 export pkgrel="{pkgrel}"
 
-# Cargo: use build dir for writable state, symlink to host cache
-export CARGO_HOME="{build_dir}/.cargo"
+# Rustup: point to sandboxed location
+export RUSTUP_HOME="/opt/rustup"
+
+# Cargo: use temp dir for writable state, symlink to cached registry/git
+export CARGO_HOME="/tmp/.cargo"
 mkdir -p "$CARGO_HOME"
-# Symlink read-only caches if they exist (use -n to not follow existing symlinks)
-[[ -d "$HOME/.cargo/registry" && ! -e "$CARGO_HOME/registry" ]] && ln -s "$HOME/.cargo/registry" "$CARGO_HOME/registry"
-[[ -d "$HOME/.cargo/git" && ! -e "$CARGO_HOME/git" ]] && ln -s "$HOME/.cargo/git" "$CARGO_HOME/git"
+[[ -d /opt/cargo/bin ]] && export PATH="/opt/cargo/bin:$PATH"
+[[ -d /opt/cargo/registry && ! -e "$CARGO_HOME/registry" ]] && ln -s /opt/cargo/registry "$CARGO_HOME/registry"
+[[ -d /opt/cargo/git && ! -e "$CARGO_HOME/git" ]] && ln -s /opt/cargo/git "$CARGO_HOME/git"
 
-# Create directories if needed
-mkdir -p "$srcdir" "$pkgdir"
+# Create pkg directory if needed
+mkdir -p "$pkgdir"
 
-# Source PKGBUILD
-cd "{build_dir}"
+# Source PKGBUILD and run function
+cd "{source_dir}"
 source PKGBUILD
-
-# Run the function
-cd "$srcdir"
 {func}
 "#,
-            srcdir = self.srcdir.display(),
-            pkgdir = self.pkgdir.display(),
-            build_dir = self.build_dir.display(),
+            source_dir = self.source_dir.display(),
+            pkg_dir = self.pkg_dir.display(),
             pkgbase = self.pkgbuild.pkgbase,
             pkgname = self.pkgbuild.package_name(),
             pkgver = self.pkgbuild.pkgver,
@@ -65,7 +59,7 @@ cd "$srcdir"
             func = func,
         );
 
-        let sandbox = Sandbox::new(&self.build_dir);
+        let sandbox = Sandbox::new(&self.source_dir, &self.pkg_dir);
         sandbox
             .run(&script)
             .with_context(|| format!("Failed to run {}()", func))
