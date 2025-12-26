@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -7,26 +7,56 @@ use super::types::Pkgbuild;
 
 pub struct BuildContext {
     pub source_dir: PathBuf,
-    pub pkg_dir: PathBuf,
     pub pkgbuild: Pkgbuild,
 }
 
 impl BuildContext {
-    pub fn new(source_dir: PathBuf, pkg_dir: PathBuf, pkgbuild: Pkgbuild) -> Self {
+    pub fn new(source_dir: PathBuf, pkgbuild: Pkgbuild) -> Self {
         Self {
             source_dir,
-            pkg_dir,
             pkgbuild,
         }
     }
 
-    fn run_function(&self, func: &str) -> Result<()> {
+    /// Build package and create archive in a single sandbox session
+    /// The pkg directory only exists in /tmp inside the sandbox
+    pub fn build_and_package(&self, dest_path: &Path, arch: &str, pkginfo: &str) -> Result<()> {
+        let filename = format!(
+            "{}-{}-{}.pkg.tar.zst",
+            self.pkgbuild.package_name(),
+            self.pkgbuild.full_version(),
+            arch
+        );
+
+        // Build functions to call
+        let mut functions = Vec::new();
+        if self.pkgbuild.has_prepare {
+            functions.push("prepare");
+        }
+        if self.pkgbuild.has_build {
+            functions.push("build");
+        }
+        if self.pkgbuild.has_check {
+            functions.push("check");
+        }
+        functions.push("package");
+
+        // Generate function calls with logging
+        let function_calls: String = functions
+            .iter()
+            .map(|f| format!("echo ':: Running {}()...'\n{}", f, f))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Escape pkginfo for shell heredoc
+        let pkginfo_escaped = pkginfo.replace("'", "'\\''");
+
         let script = format!(
             r#"
 set -e
-export srcdir="{source_dir}"
-export pkgdir="{pkg_dir}"
-export startdir="{source_dir}"
+export srcdir="/src"
+export pkgdir="/tmp/pkg"
+export startdir="/src"
 export pkgbase="{pkgbase}"
 export pkgname="{pkgname}"
 export pkgver="{pkgver}"
@@ -42,63 +72,58 @@ mkdir -p "$CARGO_HOME"
 [[ -d /opt/cargo/registry && ! -e "$CARGO_HOME/registry" ]] && ln -s /opt/cargo/registry "$CARGO_HOME/registry"
 [[ -d /opt/cargo/git && ! -e "$CARGO_HOME/git" ]] && ln -s /opt/cargo/git "$CARGO_HOME/git"
 
-# Create pkg directory if needed
+# Create pkg directory
 mkdir -p "$pkgdir"
 
-# Source PKGBUILD and run function
-cd "{source_dir}"
+# Source PKGBUILD and run build functions
+cd /src
 source PKGBUILD
-{func}
+{function_calls}
+
+# Calculate installed size and write .PKGINFO
+SIZE=$(find "$pkgdir" -type f -exec stat -c%s {{}} + 2>/dev/null | awk '{{s+=$1}} END {{print s+0}}')
+cat > "$pkgdir/.PKGINFO" << 'PKGINFO_EOF'
+{pkginfo_escaped}
+PKGINFO_EOF
+sed -i "s/__SIZE__/$SIZE/" "$pkgdir/.PKGINFO"
+
+# Create .MTREE and package archive
+cd "$pkgdir"
+
+echo ':: Creating package...'
+echo '  Generating .MTREE and archive...'
+
+# Create .MTREE
+find . -mindepth 1 ! -name '.MTREE' -print0 | sort -z | \
+    bsdtar --create --file - --format=mtree \
+        --options '!all,use-set,type,uid,gid,mode,time,size,sha256,link' \
+        --null --files-from - --no-recursion | \
+    gzip -c -n > .MTREE
+
+# Create package archive
+{{
+    [[ -f .PKGINFO ]] && echo .PKGINFO
+    [[ -f .BUILDINFO ]] && echo .BUILDINFO
+    [[ -f .MTREE ]] && echo .MTREE
+    [[ -f .INSTALL ]] && echo .INSTALL
+    [[ -f .CHANGELOG ]] && echo .CHANGELOG
+    find . -mindepth 1 ! -name '.PKGINFO' ! -name '.BUILDINFO' ! -name '.MTREE' ! -name '.INSTALL' ! -name '.CHANGELOG' -print | sort
+}} | bsdtar --create --file - --files-from - --no-recursion | zstd -c -T0 --ultra -20 > "/dest/{filename}"
 "#,
-            source_dir = self.source_dir.display(),
-            pkg_dir = self.pkg_dir.display(),
             pkgbase = self.pkgbuild.pkgbase,
             pkgname = self.pkgbuild.package_name(),
             pkgver = self.pkgbuild.pkgver,
             pkgrel = self.pkgbuild.pkgrel,
-            func = func,
+            function_calls = function_calls,
+            pkginfo_escaped = pkginfo_escaped,
+            filename = filename,
         );
 
-        let sandbox = Sandbox::new(&self.source_dir, &self.pkg_dir);
+        let sandbox = Sandbox::new(&self.source_dir).with_dest_dir(dest_path);
         sandbox
             .run(&script)
-            .with_context(|| format!("Failed to run {}()", func))
-    }
+            .context("Failed to build package")?;
 
-    pub fn prepare(&self) -> Result<()> {
-        if self.pkgbuild.has_prepare {
-            println!(":: Running prepare()...");
-            self.run_function("prepare")?;
-        }
-        Ok(())
-    }
-
-    pub fn build(&self) -> Result<()> {
-        if self.pkgbuild.has_build {
-            println!(":: Running build()...");
-            self.run_function("build")?;
-        }
-        Ok(())
-    }
-
-    pub fn check(&self) -> Result<()> {
-        if self.pkgbuild.has_check {
-            println!(":: Running check()...");
-            self.run_function("check")?;
-        }
-        Ok(())
-    }
-
-    pub fn package(&self) -> Result<()> {
-        println!(":: Running package()...");
-        self.run_function("package")
-    }
-
-    pub fn run_all(&self) -> Result<()> {
-        self.prepare()?;
-        self.build()?;
-        self.check()?;
-        self.package()?;
         Ok(())
     }
 }

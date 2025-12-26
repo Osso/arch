@@ -1,13 +1,13 @@
 use std::fmt::Write;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use walkdir::WalkDir;
 
 use super::types::Pkgbuild;
 
-pub fn generate_pkginfo(pkgbuild: &Pkgbuild, pkgdir: &Path, arch: &str) -> Result<String> {
+/// Generate .PKGINFO content
+/// Note: size field uses placeholder __SIZE__ to be replaced by the sandbox script
+pub fn generate_pkginfo(pkgbuild: &Pkgbuild, arch: &str) -> Result<String> {
     let mut content = String::new();
 
     // Header
@@ -33,9 +33,8 @@ pub fn generate_pkginfo(pkgbuild: &Pkgbuild, pkgdir: &Path, arch: &str) -> Resul
         .unwrap_or(0);
     writeln!(content, "builddate = {}", builddate)?;
 
-    // Calculate installed size
-    let size = calculate_dir_size(pkgdir)?;
-    writeln!(content, "size = {}", size)?;
+    // Size placeholder - replaced by sandbox script after package() runs
+    writeln!(content, "size = __SIZE__")?;
 
     writeln!(content, "arch = {}", arch)?;
 
@@ -71,26 +70,6 @@ pub fn generate_pkginfo(pkgbuild: &Pkgbuild, pkgdir: &Path, arch: &str) -> Resul
     Ok(content)
 }
 
-fn calculate_dir_size(dir: &Path) -> Result<u64> {
-    let mut total = 0u64;
-
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-        if entry.file_type().is_file() {
-            if let Ok(metadata) = entry.metadata() {
-                total += metadata.len();
-            }
-        }
-    }
-
-    Ok(total)
-}
-
-pub fn write_pkginfo(pkgbuild: &Pkgbuild, pkgdir: &Path, arch: &str) -> Result<()> {
-    let content = generate_pkginfo(pkgbuild, pkgdir, arch)?;
-    std::fs::write(pkgdir.join(".PKGINFO"), content)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,17 +84,13 @@ mod tests {
         pkg.pkgdesc = Some("Test package".to_string());
         pkg.depends = vec!["glibc".to_string()];
 
-        let tmpdir = std::env::temp_dir().join("pkginfo-test");
-        std::fs::create_dir_all(&tmpdir).unwrap();
-
-        let content = generate_pkginfo(&pkg, &tmpdir, "x86_64").unwrap();
+        let content = generate_pkginfo(&pkg, "x86_64").unwrap();
 
         assert!(content.contains("pkgname = test"));
         assert!(content.contains("pkgver = 1.0-1"));
         assert!(content.contains("pkgdesc = Test package"));
         assert!(content.contains("depend = glibc"));
         assert!(content.contains("arch = x86_64"));
-
-        std::fs::remove_dir_all(&tmpdir).ok();
+        assert!(content.contains("size = __SIZE__"));
     }
 }

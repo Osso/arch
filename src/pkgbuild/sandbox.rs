@@ -1,20 +1,70 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
 
+/// Fakeroot daemon handle - kills daemon on drop
+struct Fakeroot {
+    key: String,
+    daemon: Child,
+}
+
+impl Fakeroot {
+    fn start() -> Result<Self> {
+        let mut daemon = Command::new("faked")
+            .stdout(Stdio::piped())
+            .spawn()
+            .context("Failed to start faked daemon")?;
+
+        // Read KEY:PID from stdout
+        let stdout = daemon.stdout.take().context("No stdout from faked")?;
+        let mut output = String::new();
+        std::io::Read::read_to_string(&mut std::io::BufReader::new(stdout), &mut output)?;
+
+        let key = output
+            .split(':')
+            .next()
+            .context("Invalid faked output")?
+            .trim()
+            .to_string();
+
+        Ok(Self { key, daemon })
+    }
+}
+
+impl Drop for Fakeroot {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
 pub struct Sandbox<'a> {
     source_dir: &'a Path,
-    pkg_dir: &'a Path,
+    dest_dir: Option<&'a Path>,
 }
 
 impl<'a> Sandbox<'a> {
-    pub fn new(source_dir: &'a Path, pkg_dir: &'a Path) -> Self {
-        Self { source_dir, pkg_dir }
+    pub fn new(source_dir: &'a Path) -> Self {
+        Self {
+            source_dir,
+            dest_dir: None,
+        }
     }
 
-    pub fn command(&self, script: &str) -> Command {
+    /// Add a writable destination directory for package output
+    pub fn with_dest_dir(mut self, dest_dir: &'a Path) -> Self {
+        self.dest_dir = Some(dest_dir);
+        self
+    }
+
+    pub fn command(&self, script: &str, fakeroot_key: &str) -> Command {
         let mut cmd = Command::new("bwrap");
+
+        // Fakeroot environment (set inside sandbox)
+        cmd.args(["--setenv", "FAKEROOTKEY", fakeroot_key]);
+        cmd.args(["--setenv", "LD_LIBRARY_PATH", "/usr/lib/libfakeroot"]);
+        cmd.args(["--setenv", "LD_PRELOAD", "libfakeroot.so"]);
 
         // Read-only system directories
         cmd.args(["--ro-bind", "/usr", "/usr"]);
@@ -46,6 +96,18 @@ impl<'a> Sandbox<'a> {
                 }
             } else {
                 cmd.args(["--ro-bind", "/lib64", "/lib64"]);
+            }
+        }
+
+        // Handle /bin and /sbin (may be symlinks on modern systems)
+        if Path::new("/bin").is_symlink() {
+            if let Ok(target) = std::fs::read_link("/bin") {
+                cmd.args(["--symlink", target.to_str().unwrap_or("usr/bin"), "/bin"]);
+            }
+        }
+        if Path::new("/sbin").is_symlink() {
+            if let Ok(target) = std::fs::read_link("/sbin") {
+                cmd.args(["--symlink", target.to_str().unwrap_or("usr/bin"), "/sbin"]);
             }
         }
 
@@ -90,31 +152,38 @@ impl<'a> Sandbox<'a> {
             }
         }
 
-        // Source directory (writable for build artifacts)
+        // Source directory -> /src (writable for build artifacts)
         let source_dir_str = self.source_dir.to_string_lossy();
-        cmd.args(["--bind", &source_dir_str, &source_dir_str]);
+        cmd.args(["--bind", &source_dir_str, "/src"]);
 
-        // Writable pkg directory (needs to persist for package creation)
-        let pkg_dir_str = self.pkg_dir.to_string_lossy();
-        cmd.args(["--bind", &pkg_dir_str, &pkg_dir_str]);
+        // Optional destination directory -> /dest for package output
+        if let Some(dest_dir) = self.dest_dir {
+            let dest_dir_str = dest_dir.to_string_lossy();
+            cmd.args(["--bind", &dest_dir_str, "/dest"]);
+        }
 
-        // Set working directory to source
-        cmd.args(["--chdir", &source_dir_str]);
+        // Set working directory to /src
+        cmd.args(["--chdir", "/src"]);
 
         // Die when parent dies (cleanup on error)
         cmd.arg("--die-with-parent");
 
-        // Run bash with script
+        // Run bash with script (fakeroot env is set by run())
         cmd.args(["--", "bash", "-c", script]);
 
         cmd
     }
 
     pub fn run(&self, script: &str) -> Result<()> {
+        // Start faked daemon (runs on host, communicates via SysV message queue)
+        let fakeroot = Fakeroot::start()?;
+
         let status = self
-            .command(script)
+            .command(script, &fakeroot.key)
             .status()
             .context("Failed to run sandboxed command")?;
+
+        // fakeroot daemon is killed on drop
 
         if !status.success() {
             anyhow::bail!(
