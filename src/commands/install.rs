@@ -41,6 +41,10 @@ fn is_package_file(name: &str) -> bool {
 
 /// Install packages (always syncs and upgrades first for safety)
 pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
+    // Check for root first, before doing any work
+    // This prevents re-exec loop (ensure_root re-execs the whole command)
+    super::ensure_root()?;
+
     // Categorize all arguments
     let mut directories = Vec::new();
     let mut local_files = Vec::new();
@@ -54,7 +58,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
         }
     }
 
-    // Build any directories first (doesn't require root yet)
+    // Build any directories first
     for dir in &directories {
         let source_dir = std::fs::canonicalize(dir)
             .with_context(|| format!("Failed to resolve path: {}", dir))?;
@@ -66,9 +70,6 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     if local_files.is_empty() && repo_names.is_empty() {
         return Ok(());
     }
-
-    // Now we need root for installation
-    super::ensure_root()?;
 
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
