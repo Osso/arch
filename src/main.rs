@@ -2,6 +2,7 @@ mod alpm_handle;
 mod callbacks;
 mod commands;
 mod journal;
+mod pkgbuild;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -141,11 +142,15 @@ enum Commands {
         quiet: bool,
     },
 
-    /// Build and install a package from PKGBUILD
+    /// Build a package from PKGBUILD (sandboxed)
     #[command(visible_alias = "b")]
     Build {
         /// Directory containing PKGBUILD (default: current directory)
         directory: Option<std::path::PathBuf>,
+
+        /// Install package after building
+        #[arg(short, long)]
+        install: bool,
     },
 }
 
@@ -227,8 +232,8 @@ fn main() -> Result<()> {
         Commands::Verify { package, quiet } => {
             commands::verify::run(quiet, package.as_deref())
         }
-        Commands::Build { directory } => {
-            commands::build::run(directory)
+        Commands::Build { directory, install } => {
+            commands::build::run(directory, install)
         }
     }
 }

@@ -1,34 +1,28 @@
+use crate::pkgbuild;
 use crate::{alpm_handle, callbacks};
 use alpm::{SigLevel, TransFlag};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
-use std::process::Command;
 
-pub fn run(directory: Option<PathBuf>) -> Result<()> {
+pub fn run(directory: Option<PathBuf>, install: bool) -> Result<()> {
+    let dir = directory
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()
+        .context("Failed to resolve directory path")?;
+
+    // Build the package (runs in sandbox, no root needed)
+    println!(":: Building package in sandbox...");
+    let pkg_file = pkgbuild::build_package(dir.clone(), &dir)?;
+
+    println!(":: Built {}", pkg_file.display());
+
+    if !install {
+        return Ok(());
+    }
+
+    // Installation requires root
     super::ensure_root()?;
 
-    let dir = directory.unwrap_or_else(|| PathBuf::from("."));
-
-    // Verify PKGBUILD exists
-    let pkgbuild = dir.join("PKGBUILD");
-    if !pkgbuild.exists() {
-        bail!("No PKGBUILD found in {}", dir.display());
-    }
-
-    // Run makepkg -f
-    println!(":: Building package...");
-    let status = Command::new("makepkg")
-        .arg("-f")
-        .current_dir(&dir)
-        .status()
-        .context("Failed to run makepkg")?;
-
-    if !status.success() {
-        bail!("makepkg failed with exit code {}", status.code().unwrap_or(-1));
-    }
-
-    // Find the built package
-    let pkg_file = find_package_file(&dir)?;
     println!(":: Installing {}...", pkg_file.display());
 
     // Initialize alpm handle
@@ -73,30 +67,3 @@ pub fn run(directory: Option<PathBuf>) -> Result<()> {
     println!("Done!");
     Ok(())
 }
-
-fn find_package_file(dir: &PathBuf) -> Result<PathBuf> {
-    let entries = std::fs::read_dir(dir).context("Failed to read directory")?;
-
-    let mut pkg_files: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.ends_with(".pkg.tar.zst") || name.ends_with(".pkg.tar.xz")
-        })
-        .collect();
-
-    if pkg_files.is_empty() {
-        bail!("No package file found in {}", dir.display());
-    }
-
-    // Sort by modification time, newest first
-    pkg_files.sort_by(|a, b| {
-        let time_a = a.metadata().and_then(|m| m.modified()).ok();
-        let time_b = b.metadata().and_then(|m| m.modified()).ok();
-        time_b.cmp(&time_a)
-    });
-
-    Ok(pkg_files[0].path())
-}
-
