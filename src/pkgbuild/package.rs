@@ -67,24 +67,26 @@ pub fn create_package(
             continue;
         }
 
-        let archive_path = format!("./{}", relative.display());
-
         if entry.file_type().is_dir() {
+            // Directories need trailing slash in tar
+            let archive_path = format!("{}/", relative.display());
             builder
                 .append_dir(&archive_path, path)
                 .with_context(|| format!("Failed to add directory {} to package", archive_path))?;
         } else if entry.file_type().is_file() {
+            let archive_path = relative.to_string_lossy();
             builder
-                .append_path_with_name(path, &archive_path)
+                .append_path_with_name(path, archive_path.as_ref())
                 .with_context(|| format!("Failed to add file {} to package", archive_path))?;
         } else if entry.file_type().is_symlink() {
             // Handle symlinks
+            let archive_path = relative.to_string_lossy();
             let target = std::fs::read_link(path)?;
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Symlink);
             header.set_size(0);
             builder
-                .append_link(&mut header, &archive_path, target)
+                .append_link(&mut header, archive_path.as_ref(), target)
                 .with_context(|| format!("Failed to add symlink {} to package", archive_path))?;
         }
     }
