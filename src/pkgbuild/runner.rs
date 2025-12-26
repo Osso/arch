@@ -93,8 +93,8 @@ cd "$pkgdir"
 echo ':: Creating package...'
 echo '  Generating .MTREE and archive...'
 
-# Create .MTREE
-find . -mindepth 1 ! -name '.MTREE' -print0 | sort -z | \
+# Create .MTREE (paths without ./ prefix for compatibility)
+find . -mindepth 1 ! -name '.MTREE' -printf '%P\0' | sort -z | \
     bsdtar --create --file - --format=mtree \
         --options '!all,use-set,type,uid,gid,mode,time,size,sha256,link' \
         --null --files-from - --no-recursion | \
@@ -107,7 +107,7 @@ find . -mindepth 1 ! -name '.MTREE' -print0 | sort -z | \
     [[ -f .MTREE ]] && echo .MTREE
     [[ -f .INSTALL ]] && echo .INSTALL
     [[ -f .CHANGELOG ]] && echo .CHANGELOG
-    find . -mindepth 1 ! -name '.PKGINFO' ! -name '.BUILDINFO' ! -name '.MTREE' ! -name '.INSTALL' ! -name '.CHANGELOG' -print | sort
+    find . -mindepth 1 ! -name '.PKGINFO' ! -name '.BUILDINFO' ! -name '.MTREE' ! -name '.INSTALL' ! -name '.CHANGELOG' -printf '%P\n' | sort
 }} | bsdtar --create --file - --files-from - --no-recursion | zstd -c -T0 --ultra -20 > "/dest/{filename}"
 "#,
             pkgbase = self.pkgbuild.pkgbase,
