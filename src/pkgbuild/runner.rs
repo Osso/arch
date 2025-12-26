@@ -80,12 +80,10 @@ cd /src
 source PKGBUILD
 {function_calls}
 
-# Calculate installed size and write .PKGINFO
-SIZE=$(find "$pkgdir" -type f -exec stat -c%s {{}} + 2>/dev/null | awk '{{s+=$1}} END {{print s+0}}')
+# Write .PKGINFO (arch-makepkg will calculate and fill in __SIZE__)
 cat > "$pkgdir/.PKGINFO" << 'PKGINFO_EOF'
 {pkginfo_escaped}
 PKGINFO_EOF
-sed -i "s/__SIZE__/$SIZE/" "$pkgdir/.PKGINFO"
 
 # Create package archive using arch-makepkg
 echo ':: Creating package...'

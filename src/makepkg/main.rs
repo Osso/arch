@@ -7,10 +7,11 @@
 //! - Paths without ./ prefix
 //! - root:root ownership
 //! - Preserved permissions including setuid
+//! - Automatic size calculation for .PKGINFO
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -33,7 +34,51 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Calculate the total installed size of all files in a directory (excluding metadata files)
+fn calculate_installed_size(pkgdir: &Path) -> Result<u64> {
+    let mut total: u64 = 0;
+
+    for entry in WalkDir::new(pkgdir).min_depth(1) {
+        let entry = entry.context("Failed to read directory entry")?;
+        let path = entry.path();
+
+        // Skip metadata files
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with('.') {
+                continue;
+            }
+        }
+
+        let meta = fs::symlink_metadata(path)?;
+        if meta.is_file() {
+            total += meta.len();
+        }
+    }
+
+    Ok(total)
+}
+
+/// Finalize .PKGINFO by replacing __SIZE__ placeholder with actual size
+fn finalize_pkginfo(pkginfo_path: &Path, size: u64) -> Result<()> {
+    let mut content = String::new();
+    File::open(pkginfo_path)
+        .context("Failed to open .PKGINFO")?
+        .read_to_string(&mut content)?;
+
+    let updated = content.replace("__SIZE__", &size.to_string());
+
+    fs::write(pkginfo_path, updated).context("Failed to write .PKGINFO")?;
+    Ok(())
+}
+
 fn create_package(pkgdir: &Path, output: &Path) -> Result<()> {
+    // Calculate installed size and finalize .PKGINFO
+    let pkginfo_path = pkgdir.join(".PKGINFO");
+    if pkginfo_path.exists() {
+        let size = calculate_installed_size(pkgdir)?;
+        finalize_pkginfo(&pkginfo_path, size)?;
+    }
+
     // Collect all entries
     let mut entries: BTreeMap<String, PathBuf> = BTreeMap::new();
 
@@ -51,7 +96,7 @@ fn create_package(pkgdir: &Path, output: &Path) -> Result<()> {
     }
 
     // Generate .MTREE
-    let mtree_content = generate_mtree(pkgdir, &entries)?;
+    let mtree_content = generate_mtree(&entries)?;
     let mtree_path = pkgdir.join(".MTREE");
 
     // Write compressed .MTREE
@@ -168,7 +213,7 @@ fn add_entry(tar: &mut tar::Builder<impl Write>, name: &str, path: &Path) -> Res
     Ok(())
 }
 
-fn generate_mtree(_pkgdir: &Path, entries: &BTreeMap<String, PathBuf>) -> Result<String> {
+fn generate_mtree(entries: &BTreeMap<String, PathBuf>) -> Result<String> {
     let mut mtree = String::new();
     mtree.push_str("#mtree\n");
     mtree.push_str("/set type=file uid=0 gid=0\n");
@@ -212,4 +257,62 @@ fn compute_sha256(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     io::copy(&mut file, &mut hasher)?;
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_calculate_installed_size() {
+        let dir = TempDir::new().unwrap();
+        let pkgdir = dir.path();
+
+        // Create test files
+        fs::create_dir_all(pkgdir.join("usr/bin")).unwrap();
+        fs::write(pkgdir.join("usr/bin/hello"), "hello world").unwrap(); // 11 bytes
+        fs::write(pkgdir.join("usr/bin/test"), "test").unwrap(); // 4 bytes
+
+        // Metadata files should be excluded
+        fs::write(pkgdir.join(".PKGINFO"), "pkgname = test").unwrap();
+
+        let size = calculate_installed_size(pkgdir).unwrap();
+        assert_eq!(size, 15); // 11 + 4
+    }
+
+    #[test]
+    fn test_calculate_installed_size_empty() {
+        let dir = TempDir::new().unwrap();
+        let size = calculate_installed_size(dir.path()).unwrap();
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn test_finalize_pkginfo() {
+        let dir = TempDir::new().unwrap();
+        let pkginfo = dir.path().join(".PKGINFO");
+
+        fs::write(&pkginfo, "pkgname = test\nsize = __SIZE__\narch = x86_64").unwrap();
+
+        finalize_pkginfo(&pkginfo, 12345).unwrap();
+
+        let content = fs::read_to_string(&pkginfo).unwrap();
+        assert!(content.contains("size = 12345"));
+        assert!(!content.contains("__SIZE__"));
+    }
+
+    #[test]
+    fn test_finalize_pkginfo_no_placeholder() {
+        let dir = TempDir::new().unwrap();
+        let pkginfo = dir.path().join(".PKGINFO");
+
+        fs::write(&pkginfo, "pkgname = test\nsize = 100").unwrap();
+
+        finalize_pkginfo(&pkginfo, 12345).unwrap();
+
+        let content = fs::read_to_string(&pkginfo).unwrap();
+        assert!(content.contains("size = 100")); // unchanged
+    }
 }
