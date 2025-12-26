@@ -1,98 +1,45 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
 use super::sandbox::Sandbox;
-use super::types::Pkgbuild;
 
-pub struct BuildContext {
-    pub source_dir: PathBuf,
-    pub pkgbuild: Pkgbuild,
-}
-
-impl BuildContext {
-    pub fn new(source_dir: PathBuf, pkgbuild: Pkgbuild) -> Self {
-        Self {
-            source_dir,
-            pkgbuild,
-        }
-    }
-
-    /// Build package and create archive in a single sandbox session
-    /// The pkg directory only exists in /tmp inside the sandbox
-    pub fn build_and_package(&self, dest_path: &Path, arch: &str, pkginfo: &str) -> Result<()> {
-        let filename = format!(
-            "{}-{}-{}.pkg.tar.zst",
-            self.pkgbuild.package_name(),
-            self.pkgbuild.full_version(),
-            arch
-        );
-
-        // Build functions to call
-        let mut functions = Vec::new();
-        if self.pkgbuild.has_prepare {
-            functions.push("prepare");
-        }
-        if self.pkgbuild.has_build {
-            functions.push("build");
-        }
-        if self.pkgbuild.has_check {
-            functions.push("check");
-        }
-        functions.push("package");
-
-        // Generate function calls with logging
-        let function_calls: String = functions
-            .iter()
-            .map(|f| format!("echo ':: Running {}()...'\n{}", f, f))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Escape pkginfo for shell heredoc
-        let pkginfo_escaped = pkginfo.replace("'", "'\\''");
-
-        let script = format!(
-            r#"
+/// Run PKGBUILD build in sandbox
+/// Returns path to created package (found by globbing destdir)
+pub fn build_in_sandbox(source_dir: &Path, dest_dir: &Path) -> Result<()> {
+    let script = r#"
 set -e
 export srcdir="/src"
 export pkgdir="/tmp/pkg"
 export startdir="/src"
-export pkgbase="{pkgbase}"
-export pkgname="{pkgname}"
-export pkgver="{pkgver}"
-export pkgrel="{pkgrel}"
 
 # Create pkg directory
 mkdir -p "$pkgdir"
 
-# Source PKGBUILD and run build functions
+# Source PKGBUILD
 cd /src
 source PKGBUILD
-{function_calls}
 
-# Write .PKGINFO (arch-makepkg will calculate and fill in __SIZE__)
-cat > "$pkgdir/.PKGINFO" << 'PKGINFO_EOF'
-{pkginfo_escaped}
-PKGINFO_EOF
+# Export all PKGBUILD variables for arch-makepkg
+export pkgname pkgbase pkgver pkgrel epoch
+export pkgdesc url arch license
+export depends makedepends checkdepends optdepends
+export provides conflicts replaces backup
 
-# Create package archive using arch-makepkg
+# Run build functions if they exist
+type prepare &>/dev/null && { echo ':: Running prepare()...'; prepare; }
+type build &>/dev/null && { echo ':: Running build()...'; build; }
+type check &>/dev/null && { echo ':: Running check()...'; check; }
+echo ':: Running package()...'
+package
+
+# Create package
 echo ':: Creating package...'
-arch-makepkg "$pkgdir" "/dest/{filename}"
-"#,
-            pkgbase = self.pkgbuild.pkgbase,
-            pkgname = self.pkgbuild.package_name(),
-            pkgver = self.pkgbuild.pkgver,
-            pkgrel = self.pkgbuild.pkgrel,
-            function_calls = function_calls,
-            pkginfo_escaped = pkginfo_escaped,
-            filename = filename,
-        );
+arch-makepkg "$pkgdir" /dest
+"#;
 
-        let sandbox = Sandbox::new(&self.source_dir).with_dest_dir(dest_path);
-        sandbox
-            .run(&script)
-            .context("Failed to build package")?;
+    let sandbox = Sandbox::new(source_dir).with_dest_dir(dest_dir);
+    sandbox.run(script).context("Failed to build package")?;
 
-        Ok(())
-    }
+    Ok(())
 }

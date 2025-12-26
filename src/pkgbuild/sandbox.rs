@@ -85,6 +85,15 @@ impl<'a> Sandbox<'a> {
         // Empty /home - no access to user data
         cmd.args(["--tmpfs", "/home"]);
 
+        // Rustup toolchains (read-only)
+        let home = std::env::var("HOME").unwrap_or_default();
+        if !home.is_empty() {
+            let rustup = format!("{}/.rustup", home);
+            if Path::new(&rustup).exists() {
+                cmd.args(["--ro-bind", &rustup, &rustup]);
+            }
+        }
+
         // Source directory -> /src (writable for build artifacts)
         let source_dir_str = self.source_dir.to_string_lossy();
         cmd.args(["--bind", &source_dir_str, "/src"]);
