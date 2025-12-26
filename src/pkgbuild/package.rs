@@ -44,8 +44,25 @@ pub fn create_package(
     for meta_file in &[".PKGINFO", ".BUILDINFO", ".MTREE", ".INSTALL", ".CHANGELOG"] {
         let meta_path = pkgdir.join(meta_file);
         if meta_path.exists() {
+            let metadata = std::fs::metadata(&meta_path)?;
+            let mut header = tar::Header::new_gnu();
+            header.set_path(*meta_file)?;
+            header.set_size(metadata.len());
+            header.set_mode(0o644);
+            header.set_mtime(
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            );
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_cksum();
+            let file = std::fs::File::open(&meta_path)?;
             builder
-                .append_path_with_name(&meta_path, meta_file)
+                .append(&header, file)
                 .with_context(|| format!("Failed to add {} to package", meta_file))?;
         }
     }
@@ -70,13 +87,49 @@ pub fn create_package(
         if entry.file_type().is_dir() {
             // Directories need trailing slash in tar
             let archive_path = format!("{}/", relative.display());
+            let metadata = std::fs::metadata(path)?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_path(&archive_path)?;
+            header.set_size(0);
+            header.set_mode(std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()));
+            header.set_mtime(
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            );
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_cksum();
             builder
-                .append_dir(&archive_path, path)
+                .append(&header, std::io::empty())
                 .with_context(|| format!("Failed to add directory {} to package", archive_path))?;
         } else if entry.file_type().is_file() {
             let archive_path = relative.to_string_lossy();
+            let mut header = tar::Header::new_gnu();
+            header.set_path(archive_path.as_ref())?;
+            let metadata = std::fs::metadata(path)?;
+            header.set_size(metadata.len());
+            header.set_mode(std::os::unix::fs::PermissionsExt::mode(&metadata.permissions()));
+            header.set_mtime(
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            );
+            // Set root ownership for all files
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_cksum();
+
+            let file = std::fs::File::open(path)?;
             builder
-                .append_path_with_name(path, archive_path.as_ref())
+                .append(&header, file)
                 .with_context(|| format!("Failed to add file {} to package", archive_path))?;
         } else if entry.file_type().is_symlink() {
             // Handle symlinks
@@ -85,6 +138,10 @@ pub fn create_package(
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Symlink);
             header.set_size(0);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_mode(0o777);
+            header.set_cksum();
             builder
                 .append_link(&mut header, archive_path.as_ref(), target)
                 .with_context(|| format!("Failed to add symlink {} to package", archive_path))?;
