@@ -1,9 +1,73 @@
-use crate::{alpm_handle, callbacks};
-use alpm::TransFlag;
+use std::path::Path;
+
+use crate::{alpm_handle, callbacks, pkgbuild};
+use alpm::{SigLevel, TransFlag};
 use anyhow::{bail, Context, Result};
+
+/// Categorize an argument as a directory, package file, or package name
+enum PackageSource {
+    /// Directory containing PKGBUILD
+    Directory(String),
+    /// Local .pkg.tar.* file
+    File(String),
+    /// Package name from repos
+    Name(String),
+}
+
+fn categorize_package(arg: &str) -> PackageSource {
+    let path = Path::new(arg);
+
+    // Check if it's a directory with PKGBUILD
+    if path.is_dir() && path.join("PKGBUILD").exists() {
+        return PackageSource::Directory(arg.to_string());
+    }
+
+    // Check if it's a package file
+    if path.is_file() && is_package_file(arg) {
+        return PackageSource::File(arg.to_string());
+    }
+
+    // Otherwise treat as package name
+    PackageSource::Name(arg.to_string())
+}
+
+fn is_package_file(name: &str) -> bool {
+    name.ends_with(".pkg.tar.zst")
+        || name.ends_with(".pkg.tar.xz")
+        || name.ends_with(".pkg.tar.gz")
+        || name.ends_with(".pkg.tar.bz2")
+        || name.ends_with(".pkg.tar")
+}
 
 /// Install packages (always syncs and upgrades first for safety)
 pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
+    // Categorize all arguments
+    let mut directories = Vec::new();
+    let mut local_files = Vec::new();
+    let mut repo_names = Vec::new();
+
+    for arg in packages {
+        match categorize_package(arg) {
+            PackageSource::Directory(d) => directories.push(d),
+            PackageSource::File(f) => local_files.push(f),
+            PackageSource::Name(n) => repo_names.push(n),
+        }
+    }
+
+    // Build any directories first (doesn't require root yet)
+    for dir in &directories {
+        let source_dir = std::fs::canonicalize(dir)
+            .with_context(|| format!("Failed to resolve path: {}", dir))?;
+        let pkg_path = pkgbuild::build_package(source_dir, Path::new("."))?;
+        local_files.push(pkg_path.to_string_lossy().to_string());
+    }
+
+    // If we only had directories and no install needed, we're done
+    if local_files.is_empty() && repo_names.is_empty() {
+        return Ok(());
+    }
+
+    // Now we need root for installation
     super::ensure_root()?;
 
     let mut handle = alpm_handle::init()?;
@@ -16,23 +80,17 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
         .update(false)
         .context("Failed to sync databases")?;
 
-    // Find packages to install
-    let mut pkg_names = Vec::new();
-    for name in packages {
-        // Verify package exists
+    // Verify repo packages exist
+    for name in &repo_names {
         let found = handle.syncdbs().iter().any(|db| db.pkg(name.as_str()).is_ok());
         if !found {
-            // Try as provider
             if handle.syncdbs().find_satisfier(name.as_str()).is_none() {
                 bail!("Package '{}' not found in sync databases", name);
             }
         }
-        pkg_names.push(name.clone());
     }
 
     // Set up transaction flags
-    // NEEDED = skip if already installed and up-to-date
-    // For reinstall, we want to NOT set NEEDED
     let flags = if reinstall {
         TransFlag::NONE
     } else {
@@ -44,8 +102,21 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
         .trans_init(flags)
         .context("Failed to initialize transaction")?;
 
-    // Add packages to transaction - need to look them up again after trans_init
-    for name in &pkg_names {
+    // Add local package files
+    for file in &local_files {
+        let pkg = handle
+            .pkg_load(file.as_str(), true, SigLevel::USE_DEFAULT)
+            .with_context(|| format!("Failed to load package: {}", file))?;
+
+        let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(|e| format!("{:?}", e));
+        if let Some(err) = add_err {
+            let _ = handle.trans_release();
+            bail!("Failed to add package {}: {}", file, err);
+        }
+    }
+
+    // Add repo packages
+    for name in &repo_names {
         let pkg = handle
             .syncdbs()
             .iter()
@@ -53,7 +124,6 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
             .or_else(|| handle.syncdbs().find_satisfier(name.as_str()))
             .ok_or_else(|| anyhow::anyhow!("Package '{}' not found", name))?;
 
-        // Convert error to owned string immediately to release borrow
         let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(|e| format!("{:?}", e));
         if let Some(err) = add_err {
             let _ = handle.trans_release();
@@ -61,14 +131,13 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
         }
     }
 
-    // Always do a sysupgrade first (this is the key safety feature)
+    // Always do a sysupgrade first (safety feature)
     handle
         .sync_sysupgrade(false)
         .context("Failed to set up system upgrade")?;
 
     // Prepare transaction (resolve dependencies)
     println!(":: Resolving dependencies...");
-    // Convert error to owned string immediately to release borrow
     let prepare_err: Option<String> = handle
         .trans_prepare()
         .err()
@@ -172,4 +241,3 @@ pub fn upgrade() -> Result<()> {
     println!("Done!");
     Ok(())
 }
-
