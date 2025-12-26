@@ -90,10 +90,9 @@ impl<'a> Sandbox<'a> {
             }
         }
 
-        // Source directory with overlay (reads from host, writes to tmpfs)
+        // Source directory (writable for build artifacts)
         let source_dir_str = self.source_dir.to_string_lossy();
-        cmd.args(["--overlay-src", &source_dir_str]);
-        cmd.args(["--tmp-overlay", &source_dir_str]);
+        cmd.args(["--bind", &source_dir_str, &source_dir_str]);
 
         // Writable pkg directory (needs to persist for package creation)
         let pkg_dir_str = self.pkg_dir.to_string_lossy();
