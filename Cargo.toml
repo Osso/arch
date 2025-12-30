@@ -10,7 +10,7 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 nix = { version = "0.29", features = ["user", "ptrace", "process", "signal"] }
 libsystemd = "0.7"
-authd-escalate = { path = "../authd/escalate" }
+authd-escalate = { git = "https://github.com/Osso/authd" }
 walkdir = "2"
 flate2 = "1"
 tar = "0.4"
