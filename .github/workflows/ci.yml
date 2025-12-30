@@ -15,7 +15,7 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install dependencies
-        run: pacman -Syu --noconfirm git rust clang
+        run: pacman -Syu --noconfirm git rust clang pkgconf
 
       - uses: actions/checkout@v4
 
