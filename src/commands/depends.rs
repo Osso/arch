@@ -36,7 +36,12 @@ pub fn needs(package: &str) -> Result<()> {
     // Check sync dbs
     for db in handle.syncdbs() {
         if let Ok(pkg) = db.pkg(package) {
-            println!("Dependencies for {} {} ({}):", pkg.name(), pkg.version(), db.name());
+            println!(
+                "Dependencies for {} {} ({}):",
+                pkg.name(),
+                pkg.version(),
+                db.name()
+            );
 
             let deps: Vec<_> = pkg.depends().iter().collect();
             if deps.is_empty() {

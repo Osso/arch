@@ -83,7 +83,10 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
     // Verify repo packages exist
     for name in &repo_names {
-        let found = handle.syncdbs().iter().any(|db| db.pkg(name.as_str()).is_ok());
+        let found = handle
+            .syncdbs()
+            .iter()
+            .any(|db| db.pkg(name.as_str()).is_ok());
         if !found {
             if handle.syncdbs().find_satisfier(name.as_str()).is_none() {
                 bail!("Package '{}' not found in sync databases", name);
@@ -140,10 +143,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
     // Prepare transaction (resolve dependencies)
     println!(":: Resolving dependencies...");
-    let prepare_err: Option<String> = handle
-        .trans_prepare()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
@@ -165,10 +165,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
     // Commit transaction
     println!("\n:: Proceeding with installation...");
-    let commit_err: Option<String> = handle
-        .trans_commit()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
@@ -205,10 +202,7 @@ pub fn upgrade() -> Result<()> {
 
     // Prepare transaction
     println!(":: Resolving dependencies...");
-    let prepare_err: Option<String> = handle
-        .trans_prepare()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
@@ -230,10 +224,7 @@ pub fn upgrade() -> Result<()> {
 
     // Commit transaction
     println!("\n:: Proceeding with upgrade...");
-    let commit_err: Option<String> = handle
-        .trans_commit()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = commit_err {
         let _ = handle.trans_release();

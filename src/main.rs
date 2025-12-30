@@ -179,19 +179,21 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Install { packages, reinstall } => {
-            commands::install::run(&packages, reinstall)
-        }
-        Commands::Remove { packages } => {
-            commands::remove::run(&packages)
-        }
-        Commands::Autoremove => {
-            commands::remove::autoremove()
-        }
-        Commands::Upgrade => {
-            commands::install::upgrade()
-        }
-        Commands::List { pattern, exact, upgradable, orphans, manual, external } => {
+        Commands::Install {
+            packages,
+            reinstall,
+        } => commands::install::run(&packages, reinstall),
+        Commands::Remove { packages } => commands::remove::run(&packages),
+        Commands::Autoremove => commands::remove::autoremove(),
+        Commands::Upgrade => commands::install::upgrade(),
+        Commands::List {
+            pattern,
+            exact,
+            upgradable,
+            orphans,
+            manual,
+            external,
+        } => {
             if upgradable {
                 commands::list::upgradable()
             } else if orphans {
@@ -204,36 +206,18 @@ fn main() -> Result<()> {
                 commands::list::run(pattern.as_deref(), exact)
             }
         }
-        Commands::Search { pattern, desc } => {
-            commands::search::run(&pattern, desc)
-        }
-        Commands::Info { package } => {
-            commands::info::run(&package)
-        }
-        Commands::Needs { package } => {
-            commands::depends::needs(&package)
-        }
-        Commands::NeededBy { package } => {
-            commands::depends::needed_by(&package)
-        }
+        Commands::Search { pattern, desc } => commands::search::run(&pattern, desc),
+        Commands::Info { package } => commands::info::run(&package),
+        Commands::Needs { package } => commands::depends::needs(&package),
+        Commands::NeededBy { package } => commands::depends::needed_by(&package),
         Commands::Mark { action } => match action {
             MarkAction::Manual { packages } => commands::remove::mark_manual(&packages),
             MarkAction::Auto { packages } => commands::remove::mark_auto(&packages),
         },
-        Commands::Files { package } => {
-            commands::files::files(&package)
-        }
-        Commands::Belongs { path } => {
-            commands::files::belongs(&path)
-        }
-        Commands::Provides { pattern, no_sync } => {
-            commands::files::provides(&pattern, !no_sync)
-        }
-        Commands::Verify { package, quiet } => {
-            commands::verify::run(quiet, package.as_deref())
-        }
-        Commands::Build { directory, install } => {
-            commands::build::run(directory, install)
-        }
+        Commands::Files { package } => commands::files::files(&package),
+        Commands::Belongs { path } => commands::files::belongs(&path),
+        Commands::Provides { pattern, no_sync } => commands::files::provides(&pattern, !no_sync),
+        Commands::Verify { package, quiet } => commands::verify::run(quiet, package.as_deref()),
+        Commands::Build { directory, install } => commands::build::run(directory, install),
     }
 }

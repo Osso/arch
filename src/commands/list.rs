@@ -15,12 +15,7 @@ pub fn upgradable() -> Result<()> {
                 if alpm::vercmp(sync_pkg.version().as_str(), pkg.version().as_str())
                     == std::cmp::Ordering::Greater
                 {
-                    println!(
-                        "{} {} -> {}",
-                        pkg.name(),
-                        pkg.version(),
-                        sync_pkg.version()
-                    );
+                    println!("{} {} -> {}", pkg.name(), pkg.version(), sync_pkg.version());
                     found = true;
                     break;
                 }
@@ -156,4 +151,3 @@ pub fn run(pattern: Option<&str>, exact: bool) -> Result<()> {
 
     Ok(())
 }
-

@@ -189,7 +189,10 @@ mod tests {
         let mut archive = tar::Archive::new(&buf[..]);
         let entry = archive.entries().unwrap().next().unwrap().unwrap();
         assert_eq!(entry.header().entry_type(), tar::EntryType::Symlink);
-        assert_eq!(entry.link_name().unwrap().unwrap().to_str().unwrap(), "target");
+        assert_eq!(
+            entry.link_name().unwrap().unwrap().to_str().unwrap(),
+            "target"
+        );
     }
 
     #[test]

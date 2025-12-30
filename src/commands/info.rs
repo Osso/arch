@@ -35,7 +35,10 @@ fn print_package_info(pkg: &Package, installed: bool) {
     if let Some(url) = pkg.url() {
         println!("URL             : {}", url);
     }
-    println!("Licenses        : {}", pkg.licenses().iter().collect::<Vec<_>>().join(" "));
+    println!(
+        "Licenses        : {}",
+        pkg.licenses().iter().collect::<Vec<_>>().join(" ")
+    );
 
     let groups: Vec<_> = pkg.groups().iter().collect();
     if !groups.is_empty() {
@@ -64,7 +67,10 @@ fn print_package_info(pkg: &Package, installed: bool) {
     println!("Installed Size  : {}", format_size(pkg.isize()));
 
     if installed {
-        println!("Install Date    : {}", format_date(pkg.install_date().unwrap_or(0)));
+        println!(
+            "Install Date    : {}",
+            format_date(pkg.install_date().unwrap_or(0))
+        );
         println!("Install Reason  : {:?}", pkg.reason());
     } else {
         println!("Download Size   : {}", format_size(pkg.size()));

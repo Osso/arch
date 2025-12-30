@@ -14,7 +14,7 @@ pub fn register(handle: &Alpm) {
                 eprint!("warning: {}", msg);
                 journal::log_warning(msg.trim());
             }
-            LogLevel::DEBUG => {} // Skip debug messages
+            LogLevel::DEBUG => {}    // Skip debug messages
             LogLevel::FUNCTION => {} // Skip function traces
             _ => print!("{}", msg),
         }
@@ -28,15 +28,21 @@ pub fn register(handle: &Alpm) {
                     PackageOperation::Install(pkg) => {
                         ("install", pkg.name(), pkg.version().as_str(), None)
                     }
-                    PackageOperation::Upgrade(old, new) => {
-                        ("upgrade", new.name(), new.version().as_str(), Some(old.version().as_str()))
-                    }
+                    PackageOperation::Upgrade(old, new) => (
+                        "upgrade",
+                        new.name(),
+                        new.version().as_str(),
+                        Some(old.version().as_str()),
+                    ),
                     PackageOperation::Reinstall(_, new) => {
                         ("reinstall", new.name(), new.version().as_str(), None)
                     }
-                    PackageOperation::Downgrade(old, new) => {
-                        ("downgrade", new.name(), new.version().as_str(), Some(old.version().as_str()))
-                    }
+                    PackageOperation::Downgrade(old, new) => (
+                        "downgrade",
+                        new.name(),
+                        new.version().as_str(),
+                        Some(old.version().as_str()),
+                    ),
                     PackageOperation::Remove(pkg) => {
                         ("remove", pkg.name(), pkg.version().as_str(), None)
                     }

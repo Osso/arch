@@ -28,7 +28,10 @@ pub fn files(package: &str) -> Result<()> {
             let file_list: Vec<_> = files.files().iter().collect();
 
             if file_list.is_empty() {
-                println!("No files recorded for {} (run 'pacman -Fy' to sync file databases)", package);
+                println!(
+                    "No files recorded for {} (run 'pacman -Fy' to sync file databases)",
+                    package
+                );
             } else {
                 for file in file_list {
                     let name = String::from_utf8_lossy(file.name());

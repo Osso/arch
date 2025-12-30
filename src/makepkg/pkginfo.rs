@@ -43,9 +43,8 @@ pub fn generate_pkginfo(size: u64) -> Result<String> {
     };
 
     // Helper to get optional env var
-    let get_optional = |name: &str| -> Option<String> {
-        env::var(name).ok().filter(|s| !s.is_empty())
-    };
+    let get_optional =
+        |name: &str| -> Option<String> { env::var(name).ok().filter(|s| !s.is_empty()) };
 
     // Helper to get array env var (space or newline separated)
     let get_array = |name: &str| -> Vec<String> {

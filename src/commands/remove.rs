@@ -35,10 +35,7 @@ pub fn run(packages: &[String]) -> Result<()> {
 
     // Prepare transaction
     println!(":: Checking dependencies...");
-    let prepare_err: Option<String> = handle
-        .trans_prepare()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
@@ -60,10 +57,7 @@ pub fn run(packages: &[String]) -> Result<()> {
 
     // Commit transaction
     println!("\n:: Proceeding with removal...");
-    let commit_err: Option<String> = handle
-        .trans_commit()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
@@ -108,7 +102,10 @@ pub fn autoremove() -> Result<()> {
 
     // Add orphans to remove
     for name in &orphan_names {
-        let pkg = handle.localdb().pkg(name.as_str()).expect("Package should exist");
+        let pkg = handle
+            .localdb()
+            .pkg(name.as_str())
+            .expect("Package should exist");
         if let Err(e) = handle.trans_remove_pkg(pkg) {
             let _ = handle.trans_release();
             bail!("Failed to mark package for removal: {}: {:?}", name, e);
@@ -117,10 +114,7 @@ pub fn autoremove() -> Result<()> {
 
     // Prepare transaction
     println!(":: Checking dependencies...");
-    let prepare_err: Option<String> = handle
-        .trans_prepare()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
@@ -142,10 +136,7 @@ pub fn autoremove() -> Result<()> {
 
     // Commit transaction
     println!("\n:: Proceeding with removal...");
-    let commit_err: Option<String> = handle
-        .trans_commit()
-        .err()
-        .map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
 
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
@@ -203,4 +194,3 @@ pub fn mark_auto(packages: &[String]) -> Result<()> {
 
     Ok(())
 }
-

@@ -25,7 +25,10 @@ pub fn run_sandboxed_with_fakeroot(mut bwrap_cmd: Command, script: &str) -> Resu
 
     let status = child.wait().context("failed to wait for bwrap")?;
     if !status.success() {
-        anyhow::bail!("sandboxed command failed with exit code {:?}", status.code());
+        anyhow::bail!(
+            "sandboxed command failed with exit code {:?}",
+            status.code()
+        );
     }
 
     Ok(())

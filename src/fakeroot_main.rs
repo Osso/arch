@@ -126,7 +126,11 @@ fn trace_child(initial_pid: Pid) -> Result<()> {
                 let _ = ptrace::syscall(pid, None);
             }
             WaitStatus::Stopped(pid, signal) => {
-                let sig = if signal == Signal::SIGTRAP { None } else { Some(signal) };
+                let sig = if signal == Signal::SIGTRAP {
+                    None
+                } else {
+                    Some(signal)
+                };
                 let _ = ptrace::setoptions(pid, options);
                 active_pids.insert(pid.as_raw());
                 let _ = ptrace::syscall(pid, sig);
@@ -222,15 +226,21 @@ fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
             }
             SYS_CHMOD => {
                 // chmod(path, mode) - rdi=path, rsi=mode
-                state.pending_chmod.insert(pid_raw, (regs.rdi, regs.rsi as u32));
+                state
+                    .pending_chmod
+                    .insert(pid_raw, (regs.rdi, regs.rsi as u32));
             }
             SYS_FCHMODAT => {
                 // fchmodat(dirfd, path, mode, flags) - rdi=dirfd, rsi=path, rdx=mode
-                state.pending_chmod.insert(pid_raw, (regs.rsi, regs.rdx as u32));
+                state
+                    .pending_chmod
+                    .insert(pid_raw, (regs.rsi, regs.rdx as u32));
             }
             SYS_FCHMOD => {
                 // fchmod(fd, mode) - rdi=fd, rsi=mode
-                state.pending_fchmod.insert(pid_raw, (regs.rdi as i32, regs.rsi as u32));
+                state
+                    .pending_fchmod
+                    .insert(pid_raw, (regs.rdi as i32, regs.rsi as u32));
             }
             _ => {}
         }
@@ -239,15 +249,30 @@ fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
 }
 
 /// Modify stat result: fake uid/gid to 0, apply faked mode if tracked
-fn modify_stat_result(pid: Pid, buf: u64, fake_modes: &HashMap<u64, u32>, is_statx: bool) -> Result<()> {
+fn modify_stat_result(
+    pid: Pid,
+    buf: u64,
+    fake_modes: &HashMap<u64, u32>,
+    is_statx: bool,
+) -> Result<()> {
     if buf == 0 {
         return Ok(());
     }
 
     let (uid_off, gid_off, ino_off, mode_off) = if is_statx {
-        (STATX_UID_OFFSET, STATX_GID_OFFSET, STATX_INO_OFFSET, STATX_MODE_OFFSET)
+        (
+            STATX_UID_OFFSET,
+            STATX_GID_OFFSET,
+            STATX_INO_OFFSET,
+            STATX_MODE_OFFSET,
+        )
     } else {
-        (STAT_UID_OFFSET, STAT_GID_OFFSET, STAT_INO_OFFSET, STAT_MODE_OFFSET)
+        (
+            STAT_UID_OFFSET,
+            STAT_GID_OFFSET,
+            STAT_INO_OFFSET,
+            STAT_MODE_OFFSET,
+        )
     };
 
     // Fake uid/gid to 0
@@ -274,14 +299,18 @@ fn write_u32(pid: Pid, addr: u64, value: u32) -> Result<()> {
     let word_addr = addr & !7;
     let offset = (addr & 7) as usize;
 
-    let current = ptrace::read(pid, word_addr as *mut libc::c_void)
-        .context("ptrace read failed")? as u64;
+    let current =
+        ptrace::read(pid, word_addr as *mut libc::c_void).context("ptrace read failed")? as u64;
 
     let mut bytes = current.to_ne_bytes();
     bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
 
-    ptrace::write(pid, word_addr as *mut libc::c_void, u64::from_ne_bytes(bytes) as c_long)
-        .context("ptrace write failed")?;
+    ptrace::write(
+        pid,
+        word_addr as *mut libc::c_void,
+        u64::from_ne_bytes(bytes) as c_long,
+    )
+    .context("ptrace write failed")?;
     Ok(())
 }
 
@@ -289,14 +318,18 @@ fn write_u16(pid: Pid, addr: u64, value: u16) -> Result<()> {
     let word_addr = addr & !7;
     let offset = (addr & 7) as usize;
 
-    let current = ptrace::read(pid, word_addr as *mut libc::c_void)
-        .context("ptrace read failed")? as u64;
+    let current =
+        ptrace::read(pid, word_addr as *mut libc::c_void).context("ptrace read failed")? as u64;
 
     let mut bytes = current.to_ne_bytes();
     bytes[offset..offset + 2].copy_from_slice(&value.to_ne_bytes());
 
-    ptrace::write(pid, word_addr as *mut libc::c_void, u64::from_ne_bytes(bytes) as c_long)
-        .context("ptrace write failed")?;
+    ptrace::write(
+        pid,
+        word_addr as *mut libc::c_void,
+        u64::from_ne_bytes(bytes) as c_long,
+    )
+    .context("ptrace write failed")?;
     Ok(())
 }
 

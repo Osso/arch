@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Write compressed .MTREE file for a package
 pub fn write_mtree(pkgdir: &Path, entries: &BTreeMap<String, PathBuf>) -> Result<PathBuf> {
@@ -40,11 +40,7 @@ fn generate_mtree(entries: &BTreeMap<String, PathBuf>) -> Result<String> {
             ));
         } else if meta.is_symlink() {
             let target = fs::read_link(path)?;
-            mtree.push_str(&format!(
-                "./{} type=link link={}\n",
-                name,
-                target.display()
-            ));
+            mtree.push_str(&format!("./{} type=link link={}\n", name, target.display()));
         } else if meta.is_file() {
             let size = meta.len();
             let mode = meta.permissions().mode() & 0o7777;
@@ -131,6 +127,9 @@ mod tests {
         let hash = compute_sha256(&file).unwrap();
 
         // SHA256 of "hello"
-        assert_eq!(hash, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+        assert_eq!(
+            hash,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
     }
 }
