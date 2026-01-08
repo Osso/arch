@@ -62,7 +62,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     for dir in &directories {
         let source_dir = std::fs::canonicalize(dir)
             .with_context(|| format!("Failed to resolve path: {}", dir))?;
-        let pkg_path = pkgbuild::build_package(source_dir, Path::new("."))?;
+        let pkg_path = pkgbuild::build_package(source_dir.clone(), &source_dir)?;
         local_files.push(pkg_path.to_string_lossy().to_string());
     }
 
@@ -107,11 +107,30 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
         .trans_init(flags)
         .context("Failed to initialize transaction")?;
 
+    // Track local packages that need forced reinstall (same version already installed)
+    let mut force_reinstall_files = Vec::new();
+
     // Add local package files
     for file in &local_files {
         let pkg = handle
             .pkg_load(file.as_str(), true, SigLevel::USE_DEFAULT)
             .with_context(|| format!("Failed to load package: {}", file))?;
+
+        // Check if same version is already installed - libalpm silently skips these
+        let pkg_name = pkg.name().to_string();
+        let pkg_version = pkg.version().to_string();
+        let already_installed = handle
+            .localdb()
+            .pkg(pkg_name.as_str())
+            .map(|p| p.version().to_string() == pkg_version)
+            .unwrap_or(false);
+
+        if already_installed {
+            // libalpm won't reinstall same version, use pacman directly later
+            // Always reinstall local files since user explicitly built/specified them
+            force_reinstall_files.push(file.clone());
+            continue;
+        }
 
         let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(|e| format!("{:?}", e));
         if let Some(err) = add_err {
@@ -152,24 +171,45 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
     // Show what will be installed
     let to_add = handle.trans_add();
-    if to_add.is_empty() {
+    if to_add.is_empty() && force_reinstall_files.is_empty() {
         println!("Nothing to do - packages are up to date");
         handle.trans_release().ok();
         return Ok(());
     }
 
-    println!("\nPackages ({}):", to_add.len());
-    for pkg in to_add.iter() {
-        println!("  {} {}", pkg.name(), pkg.version());
+    if !to_add.is_empty() {
+        println!("\nPackages ({}):", to_add.len());
+        for pkg in to_add.iter() {
+            println!("  {} {}", pkg.name(), pkg.version());
+        }
+
+        // Commit transaction
+        println!("\n:: Proceeding with installation...");
+        let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+
+        if let Some(err) = commit_err {
+            let _ = handle.trans_release();
+            bail!("Failed to commit transaction: {}", err);
+        }
+    } else {
+        handle.trans_release().ok();
     }
 
-    // Commit transaction
-    println!("\n:: Proceeding with installation...");
-    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    // Drop the handle to release the database lock before calling pacman
+    drop(handle);
 
-    if let Some(err) = commit_err {
-        let _ = handle.trans_release();
-        bail!("Failed to commit transaction: {}", err);
+    // Handle force reinstall of same-version local packages using pacman directly
+    if !force_reinstall_files.is_empty() {
+        println!("\n:: Reinstalling {} package(s)...", force_reinstall_files.len());
+        let mut cmd = std::process::Command::new("pacman");
+        cmd.arg("-U").arg("--noconfirm");
+        for file in &force_reinstall_files {
+            cmd.arg(file);
+        }
+        let status = cmd.status().context("Failed to run pacman")?;
+        if !status.success() {
+            bail!("pacman -U failed");
+        }
     }
 
     println!("Done!");
