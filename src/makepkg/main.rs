@@ -45,6 +45,22 @@ fn create_package(pkgdir: &Path, destdir: &Path) -> Result<PathBuf> {
     let pkgrel = env::var("pkgrel").context("pkgrel not set")?;
     let arch = env::var("arch").unwrap_or_else(|_| env::consts::ARCH.to_string());
 
+    // Handle install script if specified
+    if let Ok(install_file) = env::var("install") {
+        if !install_file.is_empty() {
+            // Install script is in /src (the source directory mount point)
+            let src_install = Path::new("/src").join(&install_file);
+            let dst_install = pkgdir.join(".INSTALL");
+            if src_install.exists() {
+                fs::copy(&src_install, &dst_install)
+                    .with_context(|| format!("Failed to copy install script: {}", install_file))?;
+                println!("  -> Adding install file...");
+            } else {
+                anyhow::bail!("Install script not found: {}", src_install.display());
+            }
+        }
+    }
+
     // Determine output filename
     let filename = format!("{}-{}-{}-{}.pkg.tar.zst", pkgname, pkgver, pkgrel, arch);
     let output = destdir.join(&filename);

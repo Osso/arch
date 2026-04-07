@@ -22,7 +22,7 @@ source PKGBUILD
 
 # Export all PKGBUILD variables for arch-makepkg
 export pkgname pkgbase pkgver pkgrel epoch
-export pkgdesc url arch license
+export pkgdesc url arch license install
 export depends makedepends checkdepends optdepends
 export provides conflicts replaces backup
 

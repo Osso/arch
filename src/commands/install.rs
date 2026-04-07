@@ -1,8 +1,42 @@
 use std::path::Path;
+use std::thread;
+use std::time::Duration;
 
 use crate::{alpm_handle, callbacks, pkgbuild};
-use alpm::{SigLevel, TransFlag};
+use alpm::{Alpm, SigLevel, TransFlag};
 use anyhow::{bail, Context, Result};
+
+const MAX_SYNC_RETRIES: u32 = 5;
+const INITIAL_RETRY_DELAY_MS: u64 = 500;
+
+/// Sync databases with retry logic for lock contention
+fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
+    for attempt in 0..MAX_SYNC_RETRIES {
+        match handle.syncdbs_mut().update(false) {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                let err_str = format!("{:?}", e);
+                if err_str.contains("lock") || err_str.contains("Lock") {
+                    if attempt < MAX_SYNC_RETRIES - 1 {
+                        let delay = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
+                        eprintln!(
+                            "Database locked during sync, retrying in {}ms (attempt {}/{})",
+                            delay,
+                            attempt + 1,
+                            MAX_SYNC_RETRIES
+                        );
+                        thread::sleep(Duration::from_millis(delay));
+                    } else {
+                        return Err(e).context("Failed to sync databases after retries");
+                    }
+                } else {
+                    return Err(e).context("Failed to sync databases");
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Categorize an argument as a directory, package file, or package name
 enum PackageSource {
@@ -76,10 +110,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
     // Sync databases first
     println!(":: Synchronizing package databases...");
-    handle
-        .syncdbs_mut()
-        .update(false)
-        .context("Failed to sync databases")?;
+    sync_databases_with_retry(&mut handle)?;
 
     // Verify repo packages exist
     for name in &repo_names {
@@ -200,7 +231,10 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
 
     // Handle force reinstall of same-version local packages using pacman directly
     if !force_reinstall_files.is_empty() {
-        println!("\n:: Reinstalling {} package(s)...", force_reinstall_files.len());
+        println!(
+            "\n:: Reinstalling {} package(s)...",
+            force_reinstall_files.len()
+        );
         let mut cmd = std::process::Command::new("pacman");
         cmd.arg("-U").arg("--noconfirm");
         for file in &force_reinstall_files {
@@ -225,10 +259,7 @@ pub fn upgrade() -> Result<()> {
 
     // Sync databases
     println!(":: Synchronizing package databases...");
-    handle
-        .syncdbs_mut()
-        .update(false)
-        .context("Failed to sync databases")?;
+    sync_databases_with_retry(&mut handle)?;
 
     // Initialize transaction
     handle

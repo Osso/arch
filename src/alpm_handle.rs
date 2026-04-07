@@ -1,13 +1,64 @@
+use std::thread;
+use std::time::Duration;
+
 use alpm::{Alpm, SigLevel};
 use anyhow::{Context, Result};
 use pacmanconf::Config;
+
+const MAX_LOCK_RETRIES: u32 = 5;
+const INITIAL_RETRY_DELAY_MS: u64 = 500;
+
+/// Try to create alpm handle with retries for database lock
+fn create_alpm_with_retry(root: &str, db_path: &str) -> Result<Alpm> {
+    let mut last_error = None;
+
+    for attempt in 0..MAX_LOCK_RETRIES {
+        match Alpm::new(root, db_path) {
+            Ok(handle) => return Ok(handle),
+            Err(e) => {
+                let err_str = format!("{:?}", e);
+                // Check if it's a lock error
+                if err_str.contains("lock") || err_str.contains("Lock") {
+                    if attempt < MAX_LOCK_RETRIES - 1 {
+                        let delay = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
+                        eprintln!(
+                            "Database locked, retrying in {}ms (attempt {}/{})",
+                            delay,
+                            attempt + 1,
+                            MAX_LOCK_RETRIES
+                        );
+                        thread::sleep(Duration::from_millis(delay));
+                    }
+                    last_error = Some(e);
+                } else {
+                    // Not a lock error, fail immediately
+                    return Err(e).context("Failed to initialize alpm");
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap()).context("Failed to initialize alpm after retries (database locked)")
+}
 
 /// Initialize alpm handle with system configuration
 pub fn init() -> Result<Alpm> {
     let config = Config::new().context("Failed to read pacman.conf")?;
 
-    let mut handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
-        .context("Failed to initialize alpm")?;
+    let mut handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
+
+    // Set cache directories from pacman.conf (or default)
+    if config.cache_dir.is_empty() {
+        handle
+            .add_cachedir("/var/cache/pacman/pkg/")
+            .context("Failed to add default cache directory")?;
+    } else {
+        for dir in &config.cache_dir {
+            handle
+                .add_cachedir(dir.as_str())
+                .context("Failed to add cache directory")?;
+        }
+    }
 
     // Register sync databases from pacman.conf
     for repo in &config.repos {
@@ -28,8 +79,7 @@ pub fn init() -> Result<Alpm> {
 pub fn init_readonly() -> Result<Alpm> {
     let config = Config::new().context("Failed to read pacman.conf")?;
 
-    let handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
-        .context("Failed to initialize alpm")?;
+    let handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
 
     // Register sync databases from pacman.conf (read-only)
     for repo in &config.repos {
@@ -48,8 +98,20 @@ pub fn init_readonly() -> Result<Alpm> {
 pub fn init_files() -> Result<Alpm> {
     let config = Config::new().context("Failed to read pacman.conf")?;
 
-    let mut handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
-        .context("Failed to initialize alpm")?;
+    let mut handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
+
+    // Set cache directories from pacman.conf (or default)
+    if config.cache_dir.is_empty() {
+        handle
+            .add_cachedir("/var/cache/pacman/pkg/")
+            .context("Failed to add default cache directory")?;
+    } else {
+        for dir in &config.cache_dir {
+            handle
+                .add_cachedir(dir.as_str())
+                .context("Failed to add cache directory")?;
+        }
+    }
 
     // Set database extension to .files BEFORE registering dbs
     handle.set_dbext(".files");
@@ -73,8 +135,7 @@ pub fn init_files() -> Result<Alpm> {
 pub fn init_files_readonly() -> Result<Alpm> {
     let config = Config::new().context("Failed to read pacman.conf")?;
 
-    let mut handle = Alpm::new(config.root_dir.as_str(), config.db_path.as_str())
-        .context("Failed to initialize alpm")?;
+    let mut handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
 
     // Set database extension to .files BEFORE registering dbs
     handle.set_dbext(".files");

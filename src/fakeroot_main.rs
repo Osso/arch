@@ -98,6 +98,22 @@ fn trace_child(initial_pid: Pid) -> Result<()> {
     ptrace::setoptions(initial_pid, options).context("setoptions failed")?;
     ptrace::syscall(initial_pid, None).context("initial syscall failed")?;
 
+    let result = trace_loop(&mut state, &mut active_pids, options);
+
+    // Clean up any remaining traced processes on error or exit
+    for &pid in &active_pids {
+        // Detach from traced processes to allow them to continue/exit
+        let _ = ptrace::detach(Pid::from_raw(pid), None);
+    }
+
+    result
+}
+
+fn trace_loop(
+    state: &mut TracerState,
+    active_pids: &mut HashSet<i32>,
+    options: ptrace::Options,
+) -> Result<()> {
     loop {
         let status = match waitpid(None, Some(WaitPidFlag::__WALL)) {
             Ok(s) => s,
@@ -111,6 +127,8 @@ fn trace_child(initial_pid: Pid) -> Result<()> {
                 state.in_syscall.remove(&pid.as_raw());
                 state.pending_stat.remove(&pid.as_raw());
                 state.pending_statx.remove(&pid.as_raw());
+                state.pending_chmod.remove(&pid.as_raw());
+                state.pending_fchmod.remove(&pid.as_raw());
                 if active_pids.is_empty() {
                     break;
                 }
@@ -122,7 +140,10 @@ fn trace_child(initial_pid: Pid) -> Result<()> {
                 let _ = ptrace::syscall(pid, None);
             }
             WaitStatus::PtraceSyscall(pid) => {
-                handle_syscall(pid, &mut state)?;
+                // Don't propagate errors - just log and continue tracing
+                if let Err(e) = handle_syscall(pid, state) {
+                    eprintln!("syscall handling error for {}: {}", pid, e);
+                }
                 let _ = ptrace::syscall(pid, None);
             }
             WaitStatus::Stopped(pid, signal) => {
