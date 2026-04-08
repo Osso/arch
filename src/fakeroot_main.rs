@@ -333,12 +333,16 @@ trait ToNeBytes {
 
 impl ToNeBytes for u32 {
     type Bytes = [u8; 4];
-    fn to_ne_bytes(self) -> [u8; 4] { u32::to_ne_bytes(self) }
+    fn to_ne_bytes(self) -> [u8; 4] {
+        u32::to_ne_bytes(self)
+    }
 }
 
 impl ToNeBytes for u16 {
     type Bytes = [u8; 2];
-    fn to_ne_bytes(self) -> [u8; 2] { u16::to_ne_bytes(self) }
+    fn to_ne_bytes(self) -> [u8; 2] {
+        u16::to_ne_bytes(self)
+    }
 }
 
 fn write_int<T: ToNeBytes>(pid: Pid, addr: u64, value: T) -> Result<()> {

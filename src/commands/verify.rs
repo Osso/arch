@@ -59,9 +59,7 @@ pub fn run(quiet: bool, package: Option<&str>) -> Result<()> {
         local_db.pkgs().into_iter().collect()
     };
 
-    let any_issues = packages
-        .iter()
-        .any(|pkg| check_package_files(pkg, quiet));
+    let any_issues = packages.iter().any(|pkg| check_package_files(pkg, quiet));
 
     if !any_issues {
         if package.is_some() {
