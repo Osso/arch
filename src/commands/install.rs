@@ -73,81 +73,36 @@ fn is_package_file(name: &str) -> bool {
         || name.ends_with(".pkg.tar")
 }
 
-/// Install packages (always syncs and upgrades first for safety)
-pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
-    // Check for root first, before doing any work
-    // This prevents re-exec loop (ensure_root re-execs the whole command)
-    super::ensure_root()?;
-
-    // Categorize all arguments
-    let mut directories = Vec::new();
-    let mut local_files = Vec::new();
-    let mut repo_names = Vec::new();
-
-    for arg in packages {
-        match categorize_package(arg) {
-            PackageSource::Directory(d) => directories.push(d),
-            PackageSource::File(f) => local_files.push(f),
-            PackageSource::Name(n) => repo_names.push(n),
-        }
-    }
-
-    // Build any directories first
-    for dir in &directories {
+fn build_directories(directories: &[String], local_files: &mut Vec<String>) -> Result<()> {
+    for dir in directories {
         let source_dir = std::fs::canonicalize(dir)
             .with_context(|| format!("Failed to resolve path: {}", dir))?;
         let pkg_path = pkgbuild::build_package(source_dir.clone(), &source_dir)?;
         local_files.push(pkg_path.to_string_lossy().to_string());
     }
+    Ok(())
+}
 
-    // If we only had directories and no install needed, we're done
-    if local_files.is_empty() && repo_names.is_empty() {
-        return Ok(());
-    }
-
-    let mut handle = alpm_handle::init()?;
-    callbacks::register(&handle);
-
-    // Sync databases first
-    println!(":: Synchronizing package databases...");
-    sync_databases_with_retry(&mut handle)?;
-
-    // Verify repo packages exist
-    for name in &repo_names {
+fn verify_repo_packages(handle: &Alpm, repo_names: &[String]) -> Result<()> {
+    for name in repo_names {
         let found = handle
             .syncdbs()
             .iter()
             .any(|db| db.pkg(name.as_str()).is_ok());
-        if !found {
-            if handle.syncdbs().find_satisfier(name.as_str()).is_none() {
-                bail!("Package '{}' not found in sync databases", name);
-            }
+        if !found && handle.syncdbs().find_satisfier(name.as_str()).is_none() {
+            bail!("Package '{}' not found in sync databases", name);
         }
     }
+    Ok(())
+}
 
-    // Set up transaction flags
-    // Force reinstall for local packages (user explicitly built/specified them)
-    let flags = if reinstall || !local_files.is_empty() {
-        TransFlag::NONE
-    } else {
-        TransFlag::NEEDED
-    };
-
-    // Initialize transaction
-    handle
-        .trans_init(flags)
-        .context("Failed to initialize transaction")?;
-
-    // Track local packages that need forced reinstall (same version already installed)
-    let mut force_reinstall_files = Vec::new();
-
-    // Add local package files
-    for file in &local_files {
+fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<Vec<String>> {
+    let mut force_reinstall = Vec::new();
+    for file in local_files {
         let pkg = handle
             .pkg_load(file.as_str(), true, SigLevel::USE_DEFAULT)
             .with_context(|| format!("Failed to load package: {}", file))?;
 
-        // Check if same version is already installed - libalpm silently skips these
         let pkg_name = pkg.name().to_string();
         let pkg_version = pkg.version().to_string();
         let already_installed = handle
@@ -157,9 +112,7 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
             .unwrap_or(false);
 
         if already_installed {
-            // libalpm won't reinstall same version, use pacman directly later
-            // Always reinstall local files since user explicitly built/specified them
-            force_reinstall_files.push(file.clone());
+            force_reinstall.push(file.clone());
             continue;
         }
 
@@ -169,9 +122,11 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
             bail!("Failed to add package {}: {}", file, err);
         }
     }
+    Ok(force_reinstall)
+}
 
-    // Add repo packages
-    for name in &repo_names {
+fn add_repo_packages(handle: &mut Alpm, repo_names: &[String]) -> Result<()> {
+    for name in repo_names {
         let pkg = handle
             .syncdbs()
             .iter()
@@ -185,22 +140,20 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
             bail!("Failed to add package {}: {}", name, err);
         }
     }
+    Ok(())
+}
 
-    // Always do a sysupgrade first (safety feature)
-    handle
-        .sync_sysupgrade(false)
-        .context("Failed to set up system upgrade")?;
-
-    // Prepare transaction (resolve dependencies)
-    println!(":: Resolving dependencies...");
+fn commit_transaction(
+    handle: &mut Alpm,
+    force_reinstall_files: &[String],
+    label: &str,
+) -> Result<()> {
     let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
-
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
     }
 
-    // Show what will be installed
     let to_add = handle.trans_add();
     if to_add.is_empty() && force_reinstall_files.is_empty() {
         println!("Nothing to do - packages are up to date");
@@ -208,42 +161,92 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
         return Ok(());
     }
 
-    if !to_add.is_empty() {
-        println!("\nPackages ({}):", to_add.len());
-        for pkg in to_add.iter() {
-            println!("  {} {}", pkg.name(), pkg.version());
-        }
-
-        // Commit transaction
-        println!("\n:: Proceeding with installation...");
-        let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
-
-        if let Some(err) = commit_err {
-            let _ = handle.trans_release();
-            bail!("Failed to commit transaction: {}", err);
-        }
-    } else {
+    if to_add.is_empty() {
         handle.trans_release().ok();
+        return Ok(());
     }
 
-    // Drop the handle to release the database lock before calling pacman
+    println!("\nPackages ({}):", to_add.len());
+    for pkg in to_add.iter() {
+        println!("  {} {}", pkg.name(), pkg.version());
+    }
+
+    println!("\n:: Proceeding with {}...", label);
+    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    if let Some(err) = commit_err {
+        let _ = handle.trans_release();
+        bail!("Failed to commit transaction: {}", err);
+    }
+    Ok(())
+}
+
+fn force_reinstall_with_pacman(files: &[String]) -> Result<()> {
+    println!("\n:: Reinstalling {} package(s)...", files.len());
+    let mut cmd = std::process::Command::new("pacman");
+    cmd.arg("-U").arg("--noconfirm");
+    for file in files {
+        cmd.arg(file);
+    }
+    let status = cmd.status().context("Failed to run pacman")?;
+    if !status.success() {
+        bail!("pacman -U failed");
+    }
+    Ok(())
+}
+
+/// Install packages (always syncs and upgrades first for safety)
+pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
+    super::ensure_root()?;
+
+    let mut directories = Vec::new();
+    let mut local_files = Vec::new();
+    let mut repo_names = Vec::new();
+
+    for arg in packages {
+        match categorize_package(arg) {
+            PackageSource::Directory(d) => directories.push(d),
+            PackageSource::File(f) => local_files.push(f),
+            PackageSource::Name(n) => repo_names.push(n),
+        }
+    }
+
+    build_directories(&directories, &mut local_files)?;
+
+    if local_files.is_empty() && repo_names.is_empty() {
+        return Ok(());
+    }
+
+    let mut handle = alpm_handle::init()?;
+    callbacks::register(&handle);
+
+    println!(":: Synchronizing package databases...");
+    sync_databases_with_retry(&mut handle)?;
+
+    verify_repo_packages(&handle, &repo_names)?;
+
+    let flags = if reinstall || !local_files.is_empty() {
+        TransFlag::NONE
+    } else {
+        TransFlag::NEEDED
+    };
+    handle
+        .trans_init(flags)
+        .context("Failed to initialize transaction")?;
+
+    let force_reinstall_files = add_local_files(&mut handle, &local_files)?;
+    add_repo_packages(&mut handle, &repo_names)?;
+
+    handle
+        .sync_sysupgrade(false)
+        .context("Failed to set up system upgrade")?;
+
+    println!(":: Resolving dependencies...");
+    commit_transaction(&mut handle, &force_reinstall_files, "installation")?;
+
     drop(handle);
 
-    // Handle force reinstall of same-version local packages using pacman directly
     if !force_reinstall_files.is_empty() {
-        println!(
-            "\n:: Reinstalling {} package(s)...",
-            force_reinstall_files.len()
-        );
-        let mut cmd = std::process::Command::new("pacman");
-        cmd.arg("-U").arg("--noconfirm");
-        for file in &force_reinstall_files {
-            cmd.arg(file);
-        }
-        let status = cmd.status().context("Failed to run pacman")?;
-        if !status.success() {
-            bail!("pacman -U failed");
-        }
+        force_reinstall_with_pacman(&force_reinstall_files)?;
     }
 
     println!("Done!");
@@ -257,30 +260,24 @@ pub fn upgrade() -> Result<()> {
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
 
-    // Sync databases
     println!(":: Synchronizing package databases...");
     sync_databases_with_retry(&mut handle)?;
 
-    // Initialize transaction
     handle
         .trans_init(TransFlag::NONE)
         .context("Failed to initialize transaction")?;
 
-    // Set up system upgrade
     handle
         .sync_sysupgrade(false)
         .context("Failed to set up system upgrade")?;
 
-    // Prepare transaction
     println!(":: Resolving dependencies...");
     let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
-
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
     }
 
-    // Show what will be upgraded
     let to_add = handle.trans_add();
     if to_add.is_empty() {
         println!("System is up to date");
@@ -293,10 +290,8 @@ pub fn upgrade() -> Result<()> {
         println!("  {} {}", pkg.name(), pkg.version());
     }
 
-    // Commit transaction
     println!("\n:: Proceeding with upgrade...");
     let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
-
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
         bail!("Failed to commit transaction: {}", err);

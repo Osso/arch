@@ -41,13 +41,7 @@ fn create_alpm_with_retry(root: &str, db_path: &str) -> Result<Alpm> {
     Err(last_error.unwrap()).context("Failed to initialize alpm after retries (database locked)")
 }
 
-/// Initialize alpm handle with system configuration
-pub fn init() -> Result<Alpm> {
-    let config = Config::new().context("Failed to read pacman.conf")?;
-
-    let mut handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
-
-    // Set cache directories from pacman.conf (or default)
+fn configure_handle(handle: &mut Alpm, config: &Config) -> Result<()> {
     if config.cache_dir.is_empty() {
         handle
             .add_cachedir("/var/cache/pacman/pkg/")
@@ -60,7 +54,6 @@ pub fn init() -> Result<Alpm> {
         }
     }
 
-    // Register sync databases from pacman.conf
     for repo in &config.repos {
         let db = handle
             .register_syncdb_mut(repo.name.as_str(), SigLevel::USE_DEFAULT)
@@ -72,6 +65,14 @@ pub fn init() -> Result<Alpm> {
         }
     }
 
+    Ok(())
+}
+
+/// Initialize alpm handle with system configuration
+pub fn init() -> Result<Alpm> {
+    let config = Config::new().context("Failed to read pacman.conf")?;
+    let mut handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
+    configure_handle(&mut handle, &config)?;
     Ok(handle)
 }
 
@@ -97,37 +98,9 @@ pub fn init_readonly() -> Result<Alpm> {
 /// Initialize alpm handle for file database operations (sync)
 pub fn init_files() -> Result<Alpm> {
     let config = Config::new().context("Failed to read pacman.conf")?;
-
     let mut handle = create_alpm_with_retry(config.root_dir.as_str(), config.db_path.as_str())?;
-
-    // Set cache directories from pacman.conf (or default)
-    if config.cache_dir.is_empty() {
-        handle
-            .add_cachedir("/var/cache/pacman/pkg/")
-            .context("Failed to add default cache directory")?;
-    } else {
-        for dir in &config.cache_dir {
-            handle
-                .add_cachedir(dir.as_str())
-                .context("Failed to add cache directory")?;
-        }
-    }
-
-    // Set database extension to .files BEFORE registering dbs
     handle.set_dbext(".files");
-
-    // Register sync databases from pacman.conf
-    for repo in &config.repos {
-        let db = handle
-            .register_syncdb_mut(repo.name.as_str(), SigLevel::USE_DEFAULT)
-            .with_context(|| format!("Failed to register database: {}", repo.name))?;
-
-        for server in &repo.servers {
-            db.add_server(server.as_str())
-                .with_context(|| format!("Failed to add server {} to {}", server, repo.name))?;
-        }
-    }
-
+    configure_handle(&mut handle, &config)?;
     Ok(handle)
 }
 

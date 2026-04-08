@@ -162,6 +162,101 @@ fn trace_loop(
     Ok(())
 }
 
+fn handle_syscall_exit(
+    pid: Pid,
+    pid_raw: i32,
+    syscall: u64,
+    regs: &mut nix::libc::user_regs_struct,
+    state: &mut TracerState,
+) -> Result<bool> {
+    let mut modified = false;
+    match syscall {
+        SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => {
+            regs.rax = 0;
+            modified = true;
+        }
+        SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT => {
+            if (regs.rax as i64) < 0 {
+                regs.rax = 0;
+                modified = true;
+            }
+        }
+        SYS_CHMOD | SYS_FCHMODAT => {
+            if let Some((path_addr, mode)) = state.pending_chmod.remove(&pid_raw) {
+                if let Some(ino) = get_inode_from_path(pid, path_addr) {
+                    state.fake_modes.insert(ino, mode);
+                }
+            }
+            if (regs.rax as i64) < 0 {
+                regs.rax = 0;
+                modified = true;
+            }
+        }
+        SYS_FCHMOD => {
+            if let Some((fd, mode)) = state.pending_fchmod.remove(&pid_raw) {
+                if let Some(ino) = get_inode_from_fd(pid, fd) {
+                    state.fake_modes.insert(ino, mode);
+                }
+            }
+            if (regs.rax as i64) < 0 {
+                regs.rax = 0;
+                modified = true;
+            }
+        }
+        SYS_STAT | SYS_FSTAT | SYS_LSTAT | SYS_NEWFSTATAT => {
+            if regs.rax == 0 {
+                if let Some(buf) = state.pending_stat.remove(&pid_raw) {
+                    modify_stat_result(pid, buf, &state.fake_modes, false)?;
+                }
+            }
+        }
+        SYS_STATX => {
+            if regs.rax == 0 {
+                if let Some(buf) = state.pending_statx.remove(&pid_raw) {
+                    modify_stat_result(pid, buf, &state.fake_modes, true)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(modified)
+}
+
+fn handle_syscall_entry(
+    pid_raw: i32,
+    syscall: u64,
+    regs: &nix::libc::user_regs_struct,
+    state: &mut TracerState,
+) {
+    match syscall {
+        SYS_STAT | SYS_LSTAT | SYS_FSTAT => {
+            state.pending_stat.insert(pid_raw, regs.rsi);
+        }
+        SYS_NEWFSTATAT => {
+            state.pending_stat.insert(pid_raw, regs.rdx);
+        }
+        SYS_STATX => {
+            state.pending_statx.insert(pid_raw, regs.r8);
+        }
+        SYS_CHMOD => {
+            state
+                .pending_chmod
+                .insert(pid_raw, (regs.rdi, regs.rsi as u32));
+        }
+        SYS_FCHMODAT => {
+            state
+                .pending_chmod
+                .insert(pid_raw, (regs.rsi, regs.rdx as u32));
+        }
+        SYS_FCHMOD => {
+            state
+                .pending_fchmod
+                .insert(pid_raw, (regs.rdi as i32, regs.rsi as u32));
+        }
+        _ => {}
+    }
+}
+
 fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
     let regs = match ptrace::getregs(pid) {
         Ok(r) => r,
@@ -172,99 +267,14 @@ fn handle_syscall(pid: Pid, state: &mut TracerState) -> Result<()> {
     let syscall = regs.orig_rax;
 
     if state.in_syscall.remove(&pid_raw) {
-        // Syscall exit
         let mut regs = regs;
-        let mut modified = false;
-
-        match syscall {
-            SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => {
-                regs.rax = 0;
-                modified = true;
-            }
-            SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT => {
-                if (regs.rax as i64) < 0 {
-                    regs.rax = 0;
-                    modified = true;
-                }
-            }
-            SYS_CHMOD | SYS_FCHMODAT => {
-                // Track the faked mode by getting the inode
-                if let Some((path_addr, mode)) = state.pending_chmod.remove(&pid_raw) {
-                    if let Some(ino) = get_inode_from_path(pid, path_addr) {
-                        state.fake_modes.insert(ino, mode);
-                    }
-                }
-                if (regs.rax as i64) < 0 {
-                    regs.rax = 0;
-                    modified = true;
-                }
-            }
-            SYS_FCHMOD => {
-                // Track the faked mode by getting inode from fd
-                if let Some((fd, mode)) = state.pending_fchmod.remove(&pid_raw) {
-                    if let Some(ino) = get_inode_from_fd(pid, fd) {
-                        state.fake_modes.insert(ino, mode);
-                    }
-                }
-                if (regs.rax as i64) < 0 {
-                    regs.rax = 0;
-                    modified = true;
-                }
-            }
-            SYS_STAT | SYS_FSTAT | SYS_LSTAT | SYS_NEWFSTATAT => {
-                if regs.rax == 0 {
-                    if let Some(buf) = state.pending_stat.remove(&pid_raw) {
-                        modify_stat_result(pid, buf, &state.fake_modes, false)?;
-                    }
-                }
-            }
-            SYS_STATX => {
-                if regs.rax == 0 {
-                    if let Some(buf) = state.pending_statx.remove(&pid_raw) {
-                        modify_stat_result(pid, buf, &state.fake_modes, true)?;
-                    }
-                }
-            }
-            _ => {}
-        }
-
+        let modified = handle_syscall_exit(pid, pid_raw, syscall, &mut regs, state)?;
         if modified {
             let _ = ptrace::setregs(pid, regs);
         }
     } else {
-        // Syscall entry
         state.in_syscall.insert(pid_raw);
-
-        match syscall {
-            SYS_STAT | SYS_LSTAT | SYS_FSTAT => {
-                state.pending_stat.insert(pid_raw, regs.rsi);
-            }
-            SYS_NEWFSTATAT => {
-                state.pending_stat.insert(pid_raw, regs.rdx);
-            }
-            SYS_STATX => {
-                state.pending_statx.insert(pid_raw, regs.r8);
-            }
-            SYS_CHMOD => {
-                // chmod(path, mode) - rdi=path, rsi=mode
-                state
-                    .pending_chmod
-                    .insert(pid_raw, (regs.rdi, regs.rsi as u32));
-            }
-            SYS_FCHMODAT => {
-                // fchmodat(dirfd, path, mode, flags) - rdi=dirfd, rsi=path, rdx=mode
-                state
-                    .pending_chmod
-                    .insert(pid_raw, (regs.rsi, regs.rdx as u32));
-            }
-            SYS_FCHMOD => {
-                // fchmod(fd, mode) - rdi=fd, rsi=mode
-                state
-                    .pending_fchmod
-                    .insert(pid_raw, (regs.rdi as i32, regs.rsi as u32));
-            }
-            _ => {}
-        }
+        handle_syscall_entry(pid_raw, syscall, &regs, state);
     }
     Ok(())
 }
@@ -316,7 +326,22 @@ fn modify_stat_result(
     Ok(())
 }
 
-fn write_u32(pid: Pid, addr: u64, value: u32) -> Result<()> {
+trait ToNeBytes {
+    type Bytes: AsRef<[u8]>;
+    fn to_ne_bytes(self) -> Self::Bytes;
+}
+
+impl ToNeBytes for u32 {
+    type Bytes = [u8; 4];
+    fn to_ne_bytes(self) -> [u8; 4] { u32::to_ne_bytes(self) }
+}
+
+impl ToNeBytes for u16 {
+    type Bytes = [u8; 2];
+    fn to_ne_bytes(self) -> [u8; 2] { u16::to_ne_bytes(self) }
+}
+
+fn write_int<T: ToNeBytes>(pid: Pid, addr: u64, value: T) -> Result<()> {
     let word_addr = addr & !7;
     let offset = (addr & 7) as usize;
 
@@ -324,7 +349,9 @@ fn write_u32(pid: Pid, addr: u64, value: u32) -> Result<()> {
         ptrace::read(pid, word_addr as *mut libc::c_void).context("ptrace read failed")? as u64;
 
     let mut bytes = current.to_ne_bytes();
-    bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+    let src = value.to_ne_bytes();
+    let src = src.as_ref();
+    bytes[offset..offset + src.len()].copy_from_slice(src);
 
     ptrace::write(
         pid,
@@ -335,23 +362,12 @@ fn write_u32(pid: Pid, addr: u64, value: u32) -> Result<()> {
     Ok(())
 }
 
+fn write_u32(pid: Pid, addr: u64, value: u32) -> Result<()> {
+    write_int(pid, addr, value)
+}
+
 fn write_u16(pid: Pid, addr: u64, value: u16) -> Result<()> {
-    let word_addr = addr & !7;
-    let offset = (addr & 7) as usize;
-
-    let current =
-        ptrace::read(pid, word_addr as *mut libc::c_void).context("ptrace read failed")? as u64;
-
-    let mut bytes = current.to_ne_bytes();
-    bytes[offset..offset + 2].copy_from_slice(&value.to_ne_bytes());
-
-    ptrace::write(
-        pid,
-        word_addr as *mut libc::c_void,
-        u64::from_ne_bytes(bytes) as c_long,
-    )
-    .context("ptrace write failed")?;
-    Ok(())
+    write_int(pid, addr, value)
 }
 
 fn read_u64(pid: Pid, addr: u64) -> Option<u64> {

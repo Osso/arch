@@ -1,39 +1,57 @@
 use crate::alpm_handle;
+use alpm::{Alpm, Package};
 use anyhow::{bail, Result};
+
+fn print_local_pkg_deps(handle: &Alpm, pkg: &Package) {
+    let deps: Vec<_> = pkg.depends().iter().collect();
+    if deps.is_empty() {
+        println!("  (none)");
+    } else {
+        for dep in &deps {
+            let installed = handle.localdb().pkg(dep.name()).is_ok();
+            let marker = if installed { "" } else { " [not installed]" };
+            println!("  {}{}", dep, marker);
+        }
+    }
+    let optdeps: Vec<_> = pkg.optdepends().iter().collect();
+    if !optdeps.is_empty() {
+        println!("\nOptional dependencies:");
+        for dep in &optdeps {
+            let installed = handle.localdb().pkg(dep.name()).is_ok();
+            let marker = if installed { " [installed]" } else { "" };
+            println!("  {}{}", dep, marker);
+        }
+    }
+}
+
+fn print_sync_pkg_deps(pkg: &Package) {
+    let deps: Vec<_> = pkg.depends().iter().collect();
+    if deps.is_empty() {
+        println!("  (none)");
+    } else {
+        for dep in &deps {
+            println!("  {}", dep);
+        }
+    }
+    let optdeps: Vec<_> = pkg.optdepends().iter().collect();
+    if !optdeps.is_empty() {
+        println!("\nOptional dependencies:");
+        for dep in &optdeps {
+            println!("  {}", dep);
+        }
+    }
+}
 
 /// Show what packages a package depends on (needs)
 pub fn needs(package: &str) -> Result<()> {
     let handle = alpm_handle::init_readonly()?;
 
-    // Check local db first
     if let Ok(pkg) = handle.localdb().pkg(package) {
         println!("Dependencies for {} {}:", pkg.name(), pkg.version());
-
-        let deps: Vec<_> = pkg.depends().iter().collect();
-        if deps.is_empty() {
-            println!("  (none)");
-        } else {
-            for dep in deps {
-                let installed = handle.localdb().pkg(dep.name()).is_ok();
-                let marker = if installed { "" } else { " [not installed]" };
-                println!("  {}{}", dep, marker);
-            }
-        }
-
-        let optdeps: Vec<_> = pkg.optdepends().iter().collect();
-        if !optdeps.is_empty() {
-            println!("\nOptional dependencies:");
-            for dep in optdeps {
-                let installed = handle.localdb().pkg(dep.name()).is_ok();
-                let marker = if installed { " [installed]" } else { "" };
-                println!("  {}{}", dep, marker);
-            }
-        }
-
+        print_local_pkg_deps(&handle, &pkg);
         return Ok(());
     }
 
-    // Check sync dbs
     for db in handle.syncdbs() {
         if let Ok(pkg) = db.pkg(package) {
             println!(
@@ -42,24 +60,7 @@ pub fn needs(package: &str) -> Result<()> {
                 pkg.version(),
                 db.name()
             );
-
-            let deps: Vec<_> = pkg.depends().iter().collect();
-            if deps.is_empty() {
-                println!("  (none)");
-            } else {
-                for dep in deps {
-                    println!("  {}", dep);
-                }
-            }
-
-            let optdeps: Vec<_> = pkg.optdepends().iter().collect();
-            if !optdeps.is_empty() {
-                println!("\nOptional dependencies:");
-                for dep in optdeps {
-                    println!("  {}", dep);
-                }
-            }
-
+            print_sync_pkg_deps(&pkg);
             return Ok(());
         }
     }
