@@ -5,6 +5,60 @@ use anyhow::{Context, Result};
 
 use super::fakeroot::run_sandboxed_with_fakeroot;
 
+fn add_symlink_mount(cmd: &mut Command, path: &str, fallback_target: &str) {
+    let path_obj = Path::new(path);
+    if !path_obj.is_symlink() {
+        return;
+    }
+
+    if let Ok(target) = std::fs::read_link(path_obj) {
+        let target_str = target.to_str().unwrap_or(fallback_target);
+        cmd.args(["--symlink", target_str, path]);
+    }
+}
+
+fn add_lib_mount(cmd: &mut Command, path: &str, fallback_target: &str) {
+    let path_obj = Path::new(path);
+    if !path_obj.exists() {
+        return;
+    }
+
+    if path_obj.is_symlink() {
+        add_symlink_mount(cmd, path, fallback_target);
+        return;
+    }
+
+    cmd.args(["--ro-bind", path, path]);
+}
+
+fn add_ro_bind_if_exists(cmd: &mut Command, source: &str, destination: &str) {
+    if Path::new(source).exists() {
+        cmd.args(["--ro-bind", source, destination]);
+    }
+}
+
+fn add_rustup_bind(cmd: &mut Command) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return;
+    }
+
+    let rustup_path = format!("{}/.rustup", home);
+    if Path::new(&rustup_path).exists() {
+        cmd.args(["--ro-bind", &rustup_path, &rustup_path]);
+    }
+}
+
+fn bind_build_directories(cmd: &mut Command, source_dir: &Path, dest_dir: Option<&Path>) {
+    let source_dir_str = source_dir.to_string_lossy();
+    cmd.args(["--bind", source_dir_str.as_ref(), "/src"]);
+
+    if let Some(dest_dir) = dest_dir {
+        let dest_dir_str = dest_dir.to_string_lossy();
+        cmd.args(["--bind", dest_dir_str.as_ref(), "/dest"]);
+    }
+}
+
 pub struct Sandbox<'a> {
     source_dir: &'a Path,
     dest_dir: Option<&'a Path>,
@@ -32,42 +86,15 @@ impl<'a> Sandbox<'a> {
         cmd.args(["--ro-bind", "/etc", "/etc"]);
 
         // Handle /lib and /lib64 (may be symlinks or real dirs)
-        if Path::new("/lib").exists() {
-            if Path::new("/lib").is_symlink() {
-                if let Ok(target) = std::fs::read_link("/lib") {
-                    cmd.args(["--symlink", target.to_str().unwrap_or("usr/lib"), "/lib"]);
-                }
-            } else {
-                cmd.args(["--ro-bind", "/lib", "/lib"]);
-            }
-        }
-
-        if Path::new("/lib64").exists() {
-            if Path::new("/lib64").is_symlink() {
-                if let Ok(target) = std::fs::read_link("/lib64") {
-                    cmd.args(["--symlink", target.to_str().unwrap_or("usr/lib"), "/lib64"]);
-                }
-            } else {
-                cmd.args(["--ro-bind", "/lib64", "/lib64"]);
-            }
-        }
+        add_lib_mount(&mut cmd, "/lib", "usr/lib");
+        add_lib_mount(&mut cmd, "/lib64", "usr/lib");
 
         // Handle /bin and /sbin (may be symlinks on modern systems)
-        if Path::new("/bin").is_symlink() {
-            if let Ok(target) = std::fs::read_link("/bin") {
-                cmd.args(["--symlink", target.to_str().unwrap_or("usr/bin"), "/bin"]);
-            }
-        }
-        if Path::new("/sbin").is_symlink() {
-            if let Ok(target) = std::fs::read_link("/sbin") {
-                cmd.args(["--symlink", target.to_str().unwrap_or("usr/bin"), "/sbin"]);
-            }
-        }
+        add_symlink_mount(&mut cmd, "/bin", "usr/bin");
+        add_symlink_mount(&mut cmd, "/sbin", "usr/bin");
 
         // Package database (for pkgver() functions that query installed packages)
-        if Path::new("/var/lib/pacman").exists() {
-            cmd.args(["--ro-bind", "/var/lib/pacman", "/var/lib/pacman"]);
-        }
+        add_ro_bind_if_exists(&mut cmd, "/var/lib/pacman", "/var/lib/pacman");
 
         // Essential mounts
         cmd.args(["--dev", "/dev"]);
@@ -78,23 +105,10 @@ impl<'a> Sandbox<'a> {
         cmd.args(["--tmpfs", "/home"]);
 
         // Rustup toolchains (read-only)
-        let home = std::env::var("HOME").unwrap_or_default();
-        if !home.is_empty() {
-            let rustup = format!("{}/.rustup", home);
-            if Path::new(&rustup).exists() {
-                cmd.args(["--ro-bind", &rustup, &rustup]);
-            }
-        }
+        add_rustup_bind(&mut cmd);
 
         // Source directory -> /src (writable for build artifacts)
-        let source_dir_str = self.source_dir.to_string_lossy();
-        cmd.args(["--bind", &source_dir_str, "/src"]);
-
-        // Optional destination directory -> /dest for package output
-        if let Some(dest_dir) = self.dest_dir {
-            let dest_dir_str = dest_dir.to_string_lossy();
-            cmd.args(["--bind", &dest_dir_str, "/dest"]);
-        }
+        bind_build_directories(&mut cmd, self.source_dir, self.dest_dir);
 
         // Set working directory to /src
         cmd.args(["--chdir", "/src"]);
