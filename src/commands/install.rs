@@ -9,6 +9,11 @@ use anyhow::{bail, Context, Result};
 const MAX_SYNC_RETRIES: u32 = 5;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
 
+enum SyncAttemptOutcome {
+    Synced,
+    RetryLater,
+}
+
 fn is_lock_error(err: &alpm::Error) -> bool {
     let err_str = format!("{:?}", err);
     err_str.contains("lock") || err_str.contains("Lock")
@@ -42,12 +47,12 @@ fn handle_sync_update_error(err: alpm::Error, attempt: u32) -> Result<()> {
     Ok(())
 }
 
-fn sync_databases_attempt(handle: &mut Alpm, attempt: u32) -> Result<bool> {
+fn sync_databases_attempt(handle: &mut Alpm, attempt: u32) -> Result<SyncAttemptOutcome> {
     match handle.syncdbs_mut().update(false) {
-        Ok(_) => Ok(true),
+        Ok(_) => Ok(SyncAttemptOutcome::Synced),
         Err(err) => {
             handle_sync_update_error(err, attempt)?;
-            Ok(false)
+            Ok(SyncAttemptOutcome::RetryLater)
         }
     }
 }
@@ -55,8 +60,9 @@ fn sync_databases_attempt(handle: &mut Alpm, attempt: u32) -> Result<bool> {
 /// Sync databases with retry logic for lock contention
 fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
     for attempt in 0..MAX_SYNC_RETRIES {
-        if sync_databases_attempt(handle, attempt)? {
-            return Ok(());
+        match sync_databases_attempt(handle, attempt)? {
+            SyncAttemptOutcome::Synced => return Ok(()),
+            SyncAttemptOutcome::RetryLater => {}
         }
     }
     Ok(())
