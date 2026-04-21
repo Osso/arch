@@ -83,15 +83,20 @@ fn handle_event_message(event: Event<'_>) {
     }
 }
 
-/// Register callbacks for logging and events
-pub fn register(handle: &Alpm) {
-    // Log callback - for warnings/errors, also log to journal
+fn register_log_callback(handle: &Alpm) {
     handle.set_log_cb((), |level, msg, _| {
         handle_log_message(level, msg);
     });
+}
 
-    // Event callback - log package operations to journald with structured fields
+fn register_event_callback(handle: &Alpm) {
     handle.set_event_cb((), |event, _| {
         handle_event_message(event.event());
     });
+}
+
+/// Register callbacks for logging and events
+pub fn register(handle: &Alpm) {
+    register_log_callback(handle);
+    register_event_callback(handle);
 }
