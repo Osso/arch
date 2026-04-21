@@ -59,6 +59,21 @@ enum PackageSource {
     Name(String),
 }
 
+struct InstallTargets {
+    local_files: Vec<String>,
+    repo_names: Vec<String>,
+}
+
+impl InstallTargets {
+    fn is_empty(&self) -> bool {
+        self.local_files.is_empty() && self.repo_names.is_empty()
+    }
+
+    fn has_local_files(&self) -> bool {
+        !self.local_files.is_empty()
+    }
+}
+
 fn categorize_package(arg: &str) -> PackageSource {
     let path = Path::new(arg);
 
@@ -94,6 +109,27 @@ fn build_directories(directories: &[String], local_files: &mut Vec<String>) -> R
     Ok(())
 }
 
+fn collect_install_targets(packages: &[String]) -> Result<InstallTargets> {
+    let mut directories = Vec::new();
+    let mut local_files = Vec::new();
+    let mut repo_names = Vec::new();
+
+    for arg in packages {
+        match categorize_package(arg) {
+            PackageSource::Directory(directory) => directories.push(directory),
+            PackageSource::File(file) => local_files.push(file),
+            PackageSource::Name(name) => repo_names.push(name),
+        }
+    }
+
+    build_directories(&directories, &mut local_files)?;
+
+    Ok(InstallTargets {
+        local_files,
+        repo_names,
+    })
+}
+
 fn verify_repo_packages(handle: &Alpm, repo_names: &[String]) -> Result<()> {
     for name in repo_names {
         let found = handle
@@ -115,11 +151,11 @@ fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<Vec<Stri
             .with_context(|| format!("Failed to load package: {}", file))?;
 
         let pkg_name = pkg.name().to_string();
-        let pkg_version = pkg.version().to_string();
+        let pkg_version = pkg.version();
         let already_installed = handle
             .localdb()
             .pkg(pkg_name.as_str())
-            .map(|p| p.version().to_string() == pkg_version)
+            .map(|p| p.version() == pkg_version)
             .unwrap_or(false);
 
         if already_installed {
@@ -152,6 +188,41 @@ fn add_repo_packages(handle: &mut Alpm, repo_names: &[String]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn initialize_install_transaction(
+    handle: &mut Alpm,
+    reinstall: bool,
+    has_local_files: bool,
+) -> Result<()> {
+    let flags = if reinstall || has_local_files {
+        TransFlag::NONE
+    } else {
+        TransFlag::NEEDED
+    };
+    handle
+        .trans_init(flags)
+        .context("Failed to initialize transaction")
+}
+
+fn install_targets(
+    handle: &mut Alpm,
+    targets: &InstallTargets,
+    reinstall: bool,
+) -> Result<Vec<String>> {
+    verify_repo_packages(handle, &targets.repo_names)?;
+    initialize_install_transaction(handle, reinstall, targets.has_local_files())?;
+
+    let force_reinstall_files = add_local_files(handle, &targets.local_files)?;
+    add_repo_packages(handle, &targets.repo_names)?;
+
+    handle
+        .sync_sysupgrade(false)
+        .context("Failed to set up system upgrade")?;
+
+    println!(":: Resolving dependencies...");
+    commit_transaction(handle, &force_reinstall_files, "installation")?;
+    Ok(force_reinstall_files)
 }
 
 fn commit_transaction(
@@ -205,25 +276,20 @@ fn force_reinstall_with_pacman(files: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn reinstall_local_files_if_needed(force_reinstall_files: &[String]) -> Result<()> {
+    if force_reinstall_files.is_empty() {
+        return Ok(());
+    }
+
+    force_reinstall_with_pacman(force_reinstall_files)
+}
+
 /// Install packages (always syncs and upgrades first for safety)
 pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     super::ensure_root()?;
 
-    let mut directories = Vec::new();
-    let mut local_files = Vec::new();
-    let mut repo_names = Vec::new();
-
-    for arg in packages {
-        match categorize_package(arg) {
-            PackageSource::Directory(d) => directories.push(d),
-            PackageSource::File(f) => local_files.push(f),
-            PackageSource::Name(n) => repo_names.push(n),
-        }
-    }
-
-    build_directories(&directories, &mut local_files)?;
-
-    if local_files.is_empty() && repo_names.is_empty() {
+    let targets = collect_install_targets(packages)?;
+    if targets.is_empty() {
         return Ok(());
     }
 
@@ -233,33 +299,9 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     println!(":: Synchronizing package databases...");
     sync_databases_with_retry(&mut handle)?;
 
-    verify_repo_packages(&handle, &repo_names)?;
-
-    let flags = if reinstall || !local_files.is_empty() {
-        TransFlag::NONE
-    } else {
-        TransFlag::NEEDED
-    };
-    handle
-        .trans_init(flags)
-        .context("Failed to initialize transaction")?;
-
-    let force_reinstall_files = add_local_files(&mut handle, &local_files)?;
-    add_repo_packages(&mut handle, &repo_names)?;
-
-    handle
-        .sync_sysupgrade(false)
-        .context("Failed to set up system upgrade")?;
-
-    println!(":: Resolving dependencies...");
-    commit_transaction(&mut handle, &force_reinstall_files, "installation")?;
-
+    let force_reinstall_files = install_targets(&mut handle, &targets, reinstall)?;
     drop(handle);
-
-    if !force_reinstall_files.is_empty() {
-        force_reinstall_with_pacman(&force_reinstall_files)?;
-    }
-
+    reinstall_local_files_if_needed(&force_reinstall_files)?;
     println!("Done!");
     Ok(())
 }
