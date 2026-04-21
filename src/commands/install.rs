@@ -354,10 +354,7 @@ fn upgrade_system(handle: &mut Alpm) -> Result<()> {
     commit_upgrade_transaction(handle)
 }
 
-/// Install packages (always syncs and upgrades first for safety)
-pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
-    super::ensure_root()?;
-
+fn install_packages(packages: &[String], reinstall: bool) -> Result<()> {
     let targets = collect_install_targets(packages)?;
     if targets.is_empty() {
         return Ok(());
@@ -374,6 +371,12 @@ pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     reinstall_local_files_if_needed(&force_reinstall_files)?;
     println!("Done!");
     Ok(())
+}
+
+/// Install packages (always syncs and upgrades first for safety)
+pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
+    super::ensure_root()?;
+    install_packages(packages, reinstall)
 }
 
 /// Upgrade all packages
