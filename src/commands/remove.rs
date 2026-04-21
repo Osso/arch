@@ -9,19 +9,37 @@ pub fn run(packages: &[String]) -> Result<()> {
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
 
-    // Verify all packages are installed
+    verify_installed_packages(&handle, packages)?;
+    initialize_removal_transaction(&mut handle)?;
+    add_packages_to_removal_transaction(&mut handle, packages)?;
+    prepare_removal_transaction(&mut handle)?;
+
+    if !print_removal_candidates(&mut handle, "Packages to remove") {
+        return Ok(());
+    }
+
+    commit_removal_transaction(&mut handle)?;
+
+    println!("Done!");
+    Ok(())
+}
+
+fn verify_installed_packages(handle: &alpm::Alpm, packages: &[String]) -> Result<()> {
     for name in packages {
         if handle.localdb().pkg(name.as_str()).is_err() {
             bail!("Package '{}' is not installed", name);
         }
     }
+    Ok(())
+}
 
-    // Initialize transaction with RECURSE flag to remove unneeded deps
+fn initialize_removal_transaction(handle: &mut alpm::Alpm) -> Result<()> {
     handle
         .trans_init(TransFlag::RECURSE)
-        .context("Failed to initialize transaction")?;
+        .context("Failed to initialize transaction")
+}
 
-    // Add packages to remove
+fn add_packages_to_removal_transaction(handle: &mut alpm::Alpm, packages: &[String]) -> Result<()> {
     for name in packages {
         let pkg = handle
             .localdb()
@@ -32,39 +50,41 @@ pub fn run(packages: &[String]) -> Result<()> {
             bail!("Failed to mark package for removal: {}: {:?}", name, e);
         }
     }
+    Ok(())
+}
 
-    // Prepare transaction
+fn prepare_removal_transaction(handle: &mut alpm::Alpm) -> Result<()> {
     println!(":: Checking dependencies...");
     let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
-
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
     }
+    Ok(())
+}
 
-    // Show what will be removed
+fn print_removal_candidates(handle: &mut alpm::Alpm, heading: &str) -> bool {
     let to_remove = handle.trans_remove();
     if to_remove.is_empty() {
         println!("Nothing to remove");
         handle.trans_release().ok();
-        return Ok(());
+        return false;
     }
 
-    println!("\nPackages to remove ({}):", to_remove.len());
+    println!("\n{} ({}):", heading, to_remove.len());
     for pkg in to_remove.iter() {
         println!("  {} {}", pkg.name(), pkg.version());
     }
+    true
+}
 
-    // Commit transaction
+fn commit_removal_transaction(handle: &mut alpm::Alpm) -> Result<()> {
     println!("\n:: Proceeding with removal...");
     let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
-
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
         bail!("Failed to commit transaction: {}", err);
     }
-
-    println!("Done!");
     Ok(())
 }
 
