@@ -115,51 +115,90 @@ fn trace_loop(
     options: ptrace::Options,
 ) -> Result<()> {
     loop {
-        let status = match waitpid(None, Some(WaitPidFlag::__WALL)) {
-            Ok(s) => s,
-            Err(nix::errno::Errno::ECHILD) => break,
-            Err(e) => return Err(e).context("waitpid failed"),
+        let Some(status) = wait_for_trace_status()? else {
+            break;
         };
 
-        match status {
-            WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
-                active_pids.remove(&pid.as_raw());
-                state.in_syscall.remove(&pid.as_raw());
-                state.pending_stat.remove(&pid.as_raw());
-                state.pending_statx.remove(&pid.as_raw());
-                state.pending_chmod.remove(&pid.as_raw());
-                state.pending_fchmod.remove(&pid.as_raw());
-                if active_pids.is_empty() {
-                    break;
-                }
-            }
-            WaitStatus::PtraceEvent(pid, _, _) => {
-                if let Ok(new_pid) = ptrace::getevent(pid) {
-                    active_pids.insert(new_pid as i32);
-                }
-                let _ = ptrace::syscall(pid, None);
-            }
-            WaitStatus::PtraceSyscall(pid) => {
-                // Don't propagate errors - just log and continue tracing
-                if let Err(e) = handle_syscall(pid, state) {
-                    eprintln!("syscall handling error for {}: {}", pid, e);
-                }
-                let _ = ptrace::syscall(pid, None);
-            }
-            WaitStatus::Stopped(pid, signal) => {
-                let sig = if signal == Signal::SIGTRAP {
-                    None
-                } else {
-                    Some(signal)
-                };
-                let _ = ptrace::setoptions(pid, options);
-                active_pids.insert(pid.as_raw());
-                let _ = ptrace::syscall(pid, sig);
-            }
-            _ => {}
+        if handle_trace_status(status, state, active_pids, options) {
+            break;
         }
     }
     Ok(())
+}
+
+fn wait_for_trace_status() -> Result<Option<WaitStatus>> {
+    match waitpid(None, Some(WaitPidFlag::__WALL)) {
+        Ok(status) => Ok(Some(status)),
+        Err(nix::errno::Errno::ECHILD) => Ok(None),
+        Err(err) => Err(err).context("waitpid failed"),
+    }
+}
+
+fn handle_trace_status(
+    status: WaitStatus,
+    state: &mut TracerState,
+    active_pids: &mut HashSet<i32>,
+    options: ptrace::Options,
+) -> bool {
+    match status {
+        WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
+            cleanup_pid_state(state, active_pids, pid)
+        }
+        WaitStatus::PtraceEvent(pid, _, _) => {
+            handle_ptrace_event(active_pids, pid);
+            false
+        }
+        WaitStatus::PtraceSyscall(pid) => {
+            handle_ptrace_syscall(state, pid);
+            false
+        }
+        WaitStatus::Stopped(pid, signal) => {
+            resume_stopped_pid(active_pids, pid, signal, options);
+            false
+        }
+        _ => false,
+    }
+}
+
+fn cleanup_pid_state(state: &mut TracerState, active_pids: &mut HashSet<i32>, pid: Pid) -> bool {
+    active_pids.remove(&pid.as_raw());
+    state.in_syscall.remove(&pid.as_raw());
+    state.pending_stat.remove(&pid.as_raw());
+    state.pending_statx.remove(&pid.as_raw());
+    state.pending_chmod.remove(&pid.as_raw());
+    state.pending_fchmod.remove(&pid.as_raw());
+    active_pids.is_empty()
+}
+
+fn handle_ptrace_event(active_pids: &mut HashSet<i32>, pid: Pid) {
+    if let Ok(new_pid) = ptrace::getevent(pid) {
+        active_pids.insert(new_pid as i32);
+    }
+    let _ = ptrace::syscall(pid, None);
+}
+
+fn handle_ptrace_syscall(state: &mut TracerState, pid: Pid) {
+    // Don't propagate errors - just log and continue tracing
+    if let Err(err) = handle_syscall(pid, state) {
+        eprintln!("syscall handling error for {}: {}", pid, err);
+    }
+    let _ = ptrace::syscall(pid, None);
+}
+
+fn resume_stopped_pid(
+    active_pids: &mut HashSet<i32>,
+    pid: Pid,
+    signal: Signal,
+    options: ptrace::Options,
+) {
+    let sig = if signal == Signal::SIGTRAP {
+        None
+    } else {
+        Some(signal)
+    };
+    let _ = ptrace::setoptions(pid, options);
+    active_pids.insert(pid.as_raw());
+    let _ = ptrace::syscall(pid, sig);
 }
 
 fn handle_syscall_exit(
