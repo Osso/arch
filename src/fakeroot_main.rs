@@ -201,6 +201,80 @@ fn resume_stopped_pid(
     let _ = ptrace::syscall(pid, sig);
 }
 
+fn force_success_if_failed(regs: &mut nix::libc::user_regs_struct) -> bool {
+    if (regs.rax as i64) < 0 {
+        regs.rax = 0;
+        return true;
+    }
+    false
+}
+
+fn record_fake_mode_from_path(state: &mut TracerState, pid: Pid, pid_raw: i32) {
+    if let Some((path_addr, mode)) = state.pending_chmod.remove(&pid_raw) {
+        if let Some(ino) = get_inode_from_path(pid, path_addr) {
+            state.fake_modes.insert(ino, mode);
+        }
+    }
+}
+
+fn record_fake_mode_from_fd(state: &mut TracerState, pid: Pid, pid_raw: i32) {
+    if let Some((fd, mode)) = state.pending_fchmod.remove(&pid_raw) {
+        if let Some(ino) = get_inode_from_fd(pid, fd) {
+            state.fake_modes.insert(ino, mode);
+        }
+    }
+}
+
+fn handle_stat_buffer_exit(
+    pid: Pid,
+    pid_raw: i32,
+    regs: u64,
+    state: &mut TracerState,
+) -> Result<()> {
+    if regs != 0 {
+        return Ok(());
+    }
+    if let Some(buf) = state.pending_stat.remove(&pid_raw) {
+        modify_stat_result(pid, buf, &state.fake_modes, false)?;
+    }
+    Ok(())
+}
+
+fn handle_statx_buffer_exit(
+    pid: Pid,
+    pid_raw: i32,
+    regs: u64,
+    state: &mut TracerState,
+) -> Result<()> {
+    if regs != 0 {
+        return Ok(());
+    }
+    if let Some(buf) = state.pending_statx.remove(&pid_raw) {
+        modify_stat_result(pid, buf, &state.fake_modes, true)?;
+    }
+    Ok(())
+}
+
+fn handle_chmod_exit(
+    pid: Pid,
+    pid_raw: i32,
+    regs: &mut nix::libc::user_regs_struct,
+    state: &mut TracerState,
+) -> bool {
+    record_fake_mode_from_path(state, pid, pid_raw);
+    force_success_if_failed(regs)
+}
+
+fn handle_fchmod_exit(
+    pid: Pid,
+    pid_raw: i32,
+    regs: &mut nix::libc::user_regs_struct,
+    state: &mut TracerState,
+) -> bool {
+    record_fake_mode_from_fd(state, pid, pid_raw);
+    force_success_if_failed(regs)
+}
+
 fn handle_syscall_exit(
     pid: Pid,
     pid_raw: i32,
@@ -208,56 +282,24 @@ fn handle_syscall_exit(
     regs: &mut nix::libc::user_regs_struct,
     state: &mut TracerState,
 ) -> Result<bool> {
-    let mut modified = false;
-    match syscall {
+    let modified = match syscall {
         SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => {
             regs.rax = 0;
-            modified = true;
+            true
         }
-        SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT => {
-            if (regs.rax as i64) < 0 {
-                regs.rax = 0;
-                modified = true;
-            }
-        }
-        SYS_CHMOD | SYS_FCHMODAT => {
-            if let Some((path_addr, mode)) = state.pending_chmod.remove(&pid_raw) {
-                if let Some(ino) = get_inode_from_path(pid, path_addr) {
-                    state.fake_modes.insert(ino, mode);
-                }
-            }
-            if (regs.rax as i64) < 0 {
-                regs.rax = 0;
-                modified = true;
-            }
-        }
-        SYS_FCHMOD => {
-            if let Some((fd, mode)) = state.pending_fchmod.remove(&pid_raw) {
-                if let Some(ino) = get_inode_from_fd(pid, fd) {
-                    state.fake_modes.insert(ino, mode);
-                }
-            }
-            if (regs.rax as i64) < 0 {
-                regs.rax = 0;
-                modified = true;
-            }
-        }
+        SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT => force_success_if_failed(regs),
+        SYS_CHMOD | SYS_FCHMODAT => handle_chmod_exit(pid, pid_raw, regs, state),
+        SYS_FCHMOD => handle_fchmod_exit(pid, pid_raw, regs, state),
         SYS_STAT | SYS_FSTAT | SYS_LSTAT | SYS_NEWFSTATAT => {
-            if regs.rax == 0 {
-                if let Some(buf) = state.pending_stat.remove(&pid_raw) {
-                    modify_stat_result(pid, buf, &state.fake_modes, false)?;
-                }
-            }
+            handle_stat_buffer_exit(pid, pid_raw, regs.rax, state)?;
+            false
         }
         SYS_STATX => {
-            if regs.rax == 0 {
-                if let Some(buf) = state.pending_statx.remove(&pid_raw) {
-                    modify_stat_result(pid, buf, &state.fake_modes, true)?;
-                }
-            }
+            handle_statx_buffer_exit(pid, pid_raw, regs.rax, state)?;
+            false
         }
-        _ => {}
-    }
+        _ => false,
+    };
     Ok(modified)
 }
 
