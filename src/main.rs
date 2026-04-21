@@ -170,15 +170,38 @@ enum MarkAction {
     },
 }
 
-fn main() -> Result<()> {
-    // Reset SIGPIPE to default behavior (silent exit) to avoid panics when piping to head/less
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+fn run_list_command(
+    pattern: Option<String>,
+    exact: bool,
+    upgradable: bool,
+    orphans: bool,
+    manual: bool,
+    external: bool,
+) -> Result<()> {
+    if upgradable {
+        return commands::list::upgradable();
     }
+    if orphans {
+        return commands::list::orphans();
+    }
+    if manual {
+        return commands::list::manual(pattern.as_deref());
+    }
+    if external {
+        return commands::list::external();
+    }
+    commands::list::run(pattern.as_deref(), exact)
+}
 
-    let cli = Cli::parse();
+fn run_mark_command(action: MarkAction) -> Result<()> {
+    match action {
+        MarkAction::Manual { packages } => commands::remove::mark_manual(&packages),
+        MarkAction::Auto { packages } => commands::remove::mark_auto(&packages),
+    }
+}
 
-    match cli.command {
+fn run_command(command: Commands) -> Result<()> {
+    match command {
         Commands::Install {
             packages,
             reinstall,
@@ -193,31 +216,26 @@ fn main() -> Result<()> {
             orphans,
             manual,
             external,
-        } => {
-            if upgradable {
-                commands::list::upgradable()
-            } else if orphans {
-                commands::list::orphans()
-            } else if manual {
-                commands::list::manual(pattern.as_deref())
-            } else if external {
-                commands::list::external()
-            } else {
-                commands::list::run(pattern.as_deref(), exact)
-            }
-        }
+        } => run_list_command(pattern, exact, upgradable, orphans, manual, external),
         Commands::Search { pattern, desc } => commands::search::run(&pattern, desc),
         Commands::Info { package } => commands::info::run(&package),
         Commands::Needs { package } => commands::depends::needs(&package),
         Commands::NeededBy { package } => commands::depends::needed_by(&package),
-        Commands::Mark { action } => match action {
-            MarkAction::Manual { packages } => commands::remove::mark_manual(&packages),
-            MarkAction::Auto { packages } => commands::remove::mark_auto(&packages),
-        },
+        Commands::Mark { action } => run_mark_command(action),
         Commands::Files { package } => commands::files::files(&package),
         Commands::Belongs { path } => commands::files::belongs(&path),
         Commands::Provides { pattern, no_sync } => commands::files::provides(&pattern, !no_sync),
         Commands::Verify { package, quiet } => commands::verify::run(quiet, package.as_deref()),
         Commands::Build { directory, install } => commands::build::run(directory, install),
     }
+}
+
+fn main() -> Result<()> {
+    // Reset SIGPIPE to default behavior (silent exit) to avoid panics when piping to head/less
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
+    let cli = Cli::parse();
+    run_command(cli.command)
 }
