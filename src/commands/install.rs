@@ -57,15 +57,19 @@ fn sync_databases_attempt(handle: &mut Alpm, attempt: u32) -> Result<SyncAttempt
     }
 }
 
-/// Sync databases with retry logic for lock contention
-fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
-    for attempt in 0..MAX_SYNC_RETRIES {
+fn sync_databases_for_attempts(handle: &mut Alpm, attempts: std::ops::Range<u32>) -> Result<()> {
+    for attempt in attempts {
         match sync_databases_attempt(handle, attempt)? {
             SyncAttemptOutcome::Synced => return Ok(()),
             SyncAttemptOutcome::RetryLater => {}
         }
     }
     Ok(())
+}
+
+/// Sync databases with retry logic for lock contention
+fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
+    sync_databases_for_attempts(handle, 0..MAX_SYNC_RETRIES)
 }
 
 /// Categorize an argument as a directory, package file, or package name
