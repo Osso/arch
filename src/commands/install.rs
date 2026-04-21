@@ -9,31 +9,42 @@ use anyhow::{bail, Context, Result};
 const MAX_SYNC_RETRIES: u32 = 5;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
 
+fn is_lock_error(err: &alpm::Error) -> bool {
+    let err_str = format!("{:?}", err);
+    err_str.contains("lock") || err_str.contains("Lock")
+}
+
+fn is_last_sync_attempt(attempt: u32) -> bool {
+    attempt >= MAX_SYNC_RETRIES - 1
+}
+
+fn wait_for_sync_retry(attempt: u32) {
+    let delay = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
+    eprintln!(
+        "Database locked during sync, retrying in {}ms (attempt {}/{})",
+        delay,
+        attempt + 1,
+        MAX_SYNC_RETRIES
+    );
+    thread::sleep(Duration::from_millis(delay));
+}
+
 /// Sync databases with retry logic for lock contention
 fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
     for attempt in 0..MAX_SYNC_RETRIES {
-        match handle.syncdbs_mut().update(false) {
-            Ok(_) => return Ok(()),
-            Err(e) => {
-                let err_str = format!("{:?}", e);
-                if err_str.contains("lock") || err_str.contains("Lock") {
-                    if attempt < MAX_SYNC_RETRIES - 1 {
-                        let delay = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
-                        eprintln!(
-                            "Database locked during sync, retrying in {}ms (attempt {}/{})",
-                            delay,
-                            attempt + 1,
-                            MAX_SYNC_RETRIES
-                        );
-                        thread::sleep(Duration::from_millis(delay));
-                    } else {
-                        return Err(e).context("Failed to sync databases after retries");
-                    }
-                } else {
-                    return Err(e).context("Failed to sync databases");
-                }
-            }
+        let Err(err) = handle.syncdbs_mut().update(false) else {
+            return Ok(());
+        };
+
+        if !is_lock_error(&err) {
+            return Err(err).context("Failed to sync databases");
         }
+
+        if is_last_sync_attempt(attempt) {
+            return Err(err).context("Failed to sync databases after retries");
+        }
+
+        wait_for_sync_retry(attempt);
     }
     Ok(())
 }
