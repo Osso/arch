@@ -109,44 +109,68 @@ pub fn manual(pattern: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn print_installed_package(name: &str, version: &str) {
+    println!("{} {}", name, version);
+}
+
+fn search_exact_package(local_db: &alpm::Db, pattern: &str) -> bool {
+    if let Ok(pkg) = local_db.pkg(pattern) {
+        print_installed_package(pkg.name(), pkg.version().as_str());
+        return true;
+    }
+    false
+}
+
+fn search_packages_by_name(local_db: &alpm::Db, pattern: &str) -> bool {
+    let mut found = false;
+    let pattern_lower = pattern.to_lowercase();
+
+    for pkg in local_db.pkgs() {
+        if pkg.name().to_lowercase().contains(&pattern_lower) {
+            print_installed_package(pkg.name(), pkg.version().as_str());
+            found = true;
+        }
+    }
+
+    found
+}
+
+fn list_all_installed_packages(local_db: &alpm::Db) -> bool {
+    let mut found = false;
+
+    for pkg in local_db.pkgs() {
+        print_installed_package(pkg.name(), pkg.version().as_str());
+        found = true;
+    }
+
+    found
+}
+
+fn report_no_installed_packages(pattern: Option<&str>) {
+    if let Some(pat) = pattern {
+        eprintln!("No installed packages matching '{}'", pat);
+    } else {
+        eprintln!("No packages installed");
+    }
+}
+
 /// List installed packages, optionally filtered by pattern
 pub fn run(pattern: Option<&str>, exact: bool) -> Result<()> {
     let handle = alpm_handle::init_readonly()?;
     let local_db = handle.localdb();
 
-    let mut found = false;
-
-    if let Some(pat) = pattern {
+    let found = if let Some(pat) = pattern {
         if exact {
-            // Exact match - try to find the specific package
-            if let Ok(pkg) = local_db.pkg(pat) {
-                println!("{} {}", pkg.name(), pkg.version());
-                found = true;
-            }
+            search_exact_package(local_db, pat)
         } else {
-            // Search by name only
-            let pat_lower = pat.to_lowercase();
-            for pkg in local_db.pkgs() {
-                if pkg.name().to_lowercase().contains(&pat_lower) {
-                    println!("{} {}", pkg.name(), pkg.version());
-                    found = true;
-                }
-            }
+            search_packages_by_name(local_db, pat)
         }
     } else {
-        // No pattern - list all installed packages
-        for pkg in local_db.pkgs() {
-            println!("{} {}", pkg.name(), pkg.version());
-            found = true;
-        }
-    }
+        list_all_installed_packages(local_db)
+    };
 
     if !found {
-        if let Some(pat) = pattern {
-            eprintln!("No installed packages matching '{}'", pat);
-        } else {
-            eprintln!("No packages installed");
-        }
+        report_no_installed_packages(pattern);
     }
 
     Ok(())
