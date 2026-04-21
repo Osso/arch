@@ -8,6 +8,38 @@ use pacmanconf::Config;
 const MAX_LOCK_RETRIES: u32 = 5;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
 
+fn is_lock_error(err: &alpm::Error) -> bool {
+    let err_str = format!("{:?}", err);
+    err_str.contains("lock") || err_str.contains("Lock")
+}
+
+fn is_last_retry_attempt(attempt: u32) -> bool {
+    attempt >= MAX_LOCK_RETRIES - 1
+}
+
+fn wait_for_retry(attempt: u32) {
+    let delay = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
+    eprintln!(
+        "Database locked, retrying in {}ms (attempt {}/{})",
+        delay,
+        attempt + 1,
+        MAX_LOCK_RETRIES
+    );
+    thread::sleep(Duration::from_millis(delay));
+}
+
+fn handle_alpm_init_error(err: alpm::Error, attempt: u32) -> Result<alpm::Error> {
+    if !is_lock_error(&err) {
+        return Err(err).context("Failed to initialize alpm");
+    }
+
+    if !is_last_retry_attempt(attempt) {
+        wait_for_retry(attempt);
+    }
+
+    Ok(err)
+}
+
 /// Try to create alpm handle with retries for database lock
 fn create_alpm_with_retry(root: &str, db_path: &str) -> Result<Alpm> {
     let mut last_error = None;
@@ -15,30 +47,24 @@ fn create_alpm_with_retry(root: &str, db_path: &str) -> Result<Alpm> {
     for attempt in 0..MAX_LOCK_RETRIES {
         match Alpm::new(root, db_path) {
             Ok(handle) => return Ok(handle),
-            Err(e) => {
-                let err_str = format!("{:?}", e);
-                // Check if it's a lock error
-                if err_str.contains("lock") || err_str.contains("Lock") {
-                    if attempt < MAX_LOCK_RETRIES - 1 {
-                        let delay = INITIAL_RETRY_DELAY_MS * 2u64.pow(attempt);
-                        eprintln!(
-                            "Database locked, retrying in {}ms (attempt {}/{})",
-                            delay,
-                            attempt + 1,
-                            MAX_LOCK_RETRIES
-                        );
-                        thread::sleep(Duration::from_millis(delay));
-                    }
-                    last_error = Some(e);
-                } else {
-                    // Not a lock error, fail immediately
-                    return Err(e).context("Failed to initialize alpm");
-                }
+            Err(err) => {
+                let lock_error = handle_alpm_init_error(err, attempt)?;
+                last_error = Some(lock_error);
             }
+        }
+
+        if is_last_retry_attempt(attempt) {
+            break;
         }
     }
 
-    Err(last_error.unwrap()).context("Failed to initialize alpm after retries (database locked)")
+    let Some(last_error) = last_error else {
+        return Err(anyhow::anyhow!(
+            "Failed to initialize alpm without an error"
+        ));
+    };
+
+    Err(last_error).context("Failed to initialize alpm after retries (database locked)")
 }
 
 fn configure_handle(handle: &mut Alpm, config: &Config) -> Result<()> {
