@@ -84,44 +84,80 @@ pub fn add_file(tar: &mut tar::Builder<impl Write>, name: &str, path: &Path) -> 
 /// Add any entry (file, directory, or symlink) to the tar archive with root ownership
 pub fn add_entry(tar: &mut tar::Builder<impl Write>, name: &str, path: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(path).context("Failed to stat entry")?;
-    let mut header = tar::Header::new_gnu();
 
+    if meta.is_dir() {
+        return add_directory_entry(tar, name, &meta);
+    }
+    if meta.is_symlink() {
+        return add_symlink_entry(tar, name, path, &meta);
+    }
+    if meta.is_file() {
+        return add_regular_file_entry(tar, name, path, &meta);
+    }
+
+    Ok(())
+}
+
+fn create_base_header(meta: &fs::Metadata) -> Result<tar::Header> {
+    let mut header = tar::Header::new_gnu();
     header.set_uid(0);
     header.set_gid(0);
     header.set_mtime(meta.modified()?.duration_since(UNIX_EPOCH)?.as_secs());
+    Ok(header)
+}
 
-    if meta.is_dir() {
-        // Directory - ensure trailing slash
-        let dir_name = if name.ends_with('/') {
-            name.to_string()
-        } else {
-            format!("{}/", name)
-        };
-        header.set_path(&dir_name)?;
-        header.set_size(0);
-        header.set_mode(meta.permissions().mode());
-        header.set_entry_type(tar::EntryType::Directory);
-        header.set_cksum();
-        tar.append(&header, io::empty())?;
-    } else if meta.is_symlink() {
-        let target = fs::read_link(path)?;
-        header.set_path(name)?;
-        header.set_size(0);
-        header.set_mode(0o777);
-        header.set_entry_type(tar::EntryType::Symlink);
-        header.set_link_name(target)?;
-        header.set_cksum();
-        tar.append(&header, io::empty())?;
-    } else if meta.is_file() {
-        header.set_path(name)?;
-        header.set_size(meta.len());
-        header.set_mode(meta.permissions().mode());
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_cksum();
-        let file = File::open(path)?;
-        tar.append(&header, file)?;
-    }
+fn add_directory_entry(
+    tar: &mut tar::Builder<impl Write>,
+    name: &str,
+    meta: &fs::Metadata,
+) -> Result<()> {
+    let mut header = create_base_header(meta)?;
+    let dir_name = if name.ends_with('/') {
+        name.to_string()
+    } else {
+        format!("{}/", name)
+    };
+    header.set_path(&dir_name)?;
+    header.set_size(0);
+    header.set_mode(meta.permissions().mode());
+    header.set_entry_type(tar::EntryType::Directory);
+    header.set_cksum();
+    tar.append(&header, io::empty())?;
+    Ok(())
+}
 
+fn add_symlink_entry(
+    tar: &mut tar::Builder<impl Write>,
+    name: &str,
+    path: &Path,
+    meta: &fs::Metadata,
+) -> Result<()> {
+    let mut header = create_base_header(meta)?;
+    let target = fs::read_link(path)?;
+    header.set_path(name)?;
+    header.set_size(0);
+    header.set_mode(0o777);
+    header.set_entry_type(tar::EntryType::Symlink);
+    header.set_link_name(target)?;
+    header.set_cksum();
+    tar.append(&header, io::empty())?;
+    Ok(())
+}
+
+fn add_regular_file_entry(
+    tar: &mut tar::Builder<impl Write>,
+    name: &str,
+    path: &Path,
+    meta: &fs::Metadata,
+) -> Result<()> {
+    let mut header = create_base_header(meta)?;
+    header.set_path(name)?;
+    header.set_size(meta.len());
+    header.set_mode(meta.permissions().mode());
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
+    let file = File::open(path)?;
+    tar.append(&header, file)?;
     Ok(())
 }
 
