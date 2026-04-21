@@ -29,22 +29,28 @@ fn wait_for_sync_retry(attempt: u32) {
     thread::sleep(Duration::from_millis(delay));
 }
 
+fn handle_sync_update_error(err: alpm::Error, attempt: u32) -> Result<()> {
+    if !is_lock_error(&err) {
+        return Err(err).context("Failed to sync databases");
+    }
+
+    if is_last_sync_attempt(attempt) {
+        return Err(err).context("Failed to sync databases after retries");
+    }
+
+    wait_for_sync_retry(attempt);
+    Ok(())
+}
+
 /// Sync databases with retry logic for lock contention
 fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
     for attempt in 0..MAX_SYNC_RETRIES {
-        let Err(err) = handle.syncdbs_mut().update(false) else {
+        let update_result = handle.syncdbs_mut().update(false);
+        let Err(err) = update_result else {
             return Ok(());
         };
 
-        if !is_lock_error(&err) {
-            return Err(err).context("Failed to sync databases");
-        }
-
-        if is_last_sync_attempt(attempt) {
-            return Err(err).context("Failed to sync databases after retries");
-        }
-
-        wait_for_sync_retry(attempt);
+        handle_sync_update_error(err, attempt)?;
     }
     Ok(())
 }
