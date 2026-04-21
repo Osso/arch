@@ -40,30 +40,37 @@ fn handle_alpm_init_error(err: alpm::Error, attempt: u32) -> Result<alpm::Error>
     Ok(err)
 }
 
+fn try_create_alpm_once(
+    root: &str,
+    db_path: &str,
+    attempt: u32,
+    last_error: &mut Option<alpm::Error>,
+) -> Result<Option<Alpm>> {
+    match Alpm::new(root, db_path) {
+        Ok(handle) => Ok(Some(handle)),
+        Err(err) => {
+            let lock_error = handle_alpm_init_error(err, attempt)?;
+            *last_error = Some(lock_error);
+            Ok(None)
+        }
+    }
+}
+
+fn require_last_lock_error(last_error: Option<alpm::Error>) -> Result<alpm::Error> {
+    last_error.ok_or_else(|| anyhow::anyhow!("Failed to initialize alpm without an error"))
+}
+
 /// Try to create alpm handle with retries for database lock
 fn create_alpm_with_retry(root: &str, db_path: &str) -> Result<Alpm> {
     let mut last_error = None;
 
     for attempt in 0..MAX_LOCK_RETRIES {
-        match Alpm::new(root, db_path) {
-            Ok(handle) => return Ok(handle),
-            Err(err) => {
-                let lock_error = handle_alpm_init_error(err, attempt)?;
-                last_error = Some(lock_error);
-            }
-        }
-
-        if is_last_retry_attempt(attempt) {
-            break;
+        if let Some(handle) = try_create_alpm_once(root, db_path, attempt, &mut last_error)? {
+            return Ok(handle);
         }
     }
 
-    let Some(last_error) = last_error else {
-        return Err(anyhow::anyhow!(
-            "Failed to initialize alpm without an error"
-        ));
-    };
-
+    let last_error = require_last_lock_error(last_error)?;
     Err(last_error).context("Failed to initialize alpm after retries (database locked)")
 }
 
