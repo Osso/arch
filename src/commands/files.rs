@@ -1,5 +1,6 @@
 use crate::alpm_handle;
 use anyhow::{bail, Context, Result};
+use std::collections::HashSet;
 
 fn collect_owned_file_names(files: &alpm::FileList) -> Vec<String> {
     files
@@ -98,6 +99,73 @@ fn sync_file_databases() -> Result<()> {
     Ok(())
 }
 
+fn print_provider_match(pkg_name: &str, pkg_version: &str, source: &str, file_name: &str) {
+    println!("{} {} {}", pkg_name, pkg_version, source);
+    println!("    /{}", file_name);
+}
+
+fn collect_installed_package_names(handle: &alpm::Alpm) -> HashSet<String> {
+    handle
+        .localdb()
+        .pkgs()
+        .iter()
+        .map(|pkg| pkg.name().to_string())
+        .collect()
+}
+
+fn search_installed_providers(local_handle: &alpm::Alpm, search_pattern: &str) -> bool {
+    let mut found = false;
+
+    for pkg in local_handle.localdb().pkgs() {
+        for file in pkg.files().files() {
+            let file_name = String::from_utf8_lossy(file.name());
+            if file_name.contains(search_pattern) {
+                print_provider_match(
+                    pkg.name(),
+                    pkg.version().as_str(),
+                    "[installed]",
+                    &file_name,
+                );
+                found = true;
+            }
+        }
+    }
+
+    found
+}
+
+fn search_sync_providers(
+    files_handle: &alpm::Alpm,
+    installed_packages: &HashSet<String>,
+    search_pattern: &str,
+) -> bool {
+    let mut found = false;
+
+    for db in files_handle.syncdbs() {
+        for pkg in db.pkgs() {
+            if installed_packages.contains(pkg.name()) {
+                continue;
+            }
+
+            for file in pkg.files().files() {
+                let file_name = String::from_utf8_lossy(file.name());
+                if file_name.contains(search_pattern) {
+                    let source = format!("({})", db.name());
+                    print_provider_match(
+                        pkg.name(),
+                        pkg.version().as_str(),
+                        source.as_str(),
+                        &file_name,
+                    );
+                    found = true;
+                }
+            }
+        }
+    }
+
+    found
+}
+
 /// Search for packages that provide a file (apt-file search / pacman -F)
 pub fn provides(pattern: &str, sync: bool) -> Result<()> {
     // Sync file databases if requested
@@ -108,40 +176,14 @@ pub fn provides(pattern: &str, sync: bool) -> Result<()> {
     // Normalize pattern - remove leading slash for comparison
     let search_pattern = pattern.strip_prefix('/').unwrap_or(pattern);
 
-    let mut found = false;
-
     // First search installed packages (use regular handle for local db)
     let local_handle = alpm_handle::init_readonly()?;
-    for pkg in local_handle.localdb().pkgs() {
-        for file in pkg.files().files() {
-            let file_name = String::from_utf8_lossy(file.name());
-            if file_name.contains(search_pattern) {
-                println!("{} {} [installed]", pkg.name(), pkg.version());
-                println!("    /{}", file_name);
-                found = true;
-            }
-        }
-    }
+    let installed_packages = collect_installed_package_names(&local_handle);
+    let mut found = search_installed_providers(&local_handle, search_pattern);
 
     // Then search sync dbs using files handle
     let files_handle = alpm_handle::init_files_readonly()?;
-    for db in files_handle.syncdbs() {
-        for pkg in db.pkgs() {
-            // Skip if already shown as installed
-            if local_handle.localdb().pkg(pkg.name()).is_ok() {
-                continue;
-            }
-
-            for file in pkg.files().files() {
-                let file_name = String::from_utf8_lossy(file.name());
-                if file_name.contains(search_pattern) {
-                    println!("{} {} ({})", pkg.name(), pkg.version(), db.name());
-                    println!("    /{}", file_name);
-                    found = true;
-                }
-            }
-        }
-    }
+    found |= search_sync_providers(&files_handle, &installed_packages, search_pattern);
 
     if !found {
         println!("No packages found providing '{}'", pattern);
