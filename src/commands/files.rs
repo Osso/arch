@@ -1,43 +1,48 @@
 use crate::alpm_handle;
 use anyhow::{bail, Context, Result};
 
+fn collect_owned_file_names(files: &alpm::FileList) -> Vec<String> {
+    files
+        .files()
+        .iter()
+        .map(|file| String::from_utf8_lossy(file.name()).into_owned())
+        .collect()
+}
+
+fn print_owned_files(package: &str, file_names: &[String], empty_hint: Option<&str>) {
+    if file_names.is_empty() {
+        match empty_hint {
+            Some(hint) => println!("No files recorded for {} ({})", package, hint),
+            None => println!("No files recorded for {}", package),
+        }
+        return;
+    }
+
+    for name in file_names {
+        println!("/{}", name);
+    }
+}
+
 /// List files owned by a package (dpkg -L / pacman -Ql)
 pub fn files(package: &str) -> Result<()> {
     let handle = alpm_handle::init_readonly()?;
 
     // Check local db first
     if let Ok(pkg) = handle.localdb().pkg(package) {
-        let files = pkg.files();
-        let file_list: Vec<_> = files.files().iter().collect();
-
-        if file_list.is_empty() {
-            println!("No files recorded for {}", package);
-        } else {
-            for file in file_list {
-                let name = String::from_utf8_lossy(file.name());
-                println!("/{}", name);
-            }
-        }
+        let file_names = collect_owned_file_names(pkg.files());
+        print_owned_files(package, &file_names, None);
         return Ok(());
     }
 
     // Check sync dbs (files db must be synced with pacman -Fy)
     for db in handle.syncdbs() {
         if let Ok(pkg) = db.pkg(package) {
-            let files = pkg.files();
-            let file_list: Vec<_> = files.files().iter().collect();
-
-            if file_list.is_empty() {
-                println!(
-                    "No files recorded for {} (run 'pacman -Fy' to sync file databases)",
-                    package
-                );
-            } else {
-                for file in file_list {
-                    let name = String::from_utf8_lossy(file.name());
-                    println!("/{}", name);
-                }
-            }
+            let file_names = collect_owned_file_names(pkg.files());
+            print_owned_files(
+                package,
+                &file_names,
+                Some("run 'pacman -Fy' to sync file databases"),
+            );
             return Ok(());
         }
     }
