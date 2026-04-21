@@ -275,6 +275,59 @@ fn handle_fchmod_exit(
     force_success_if_failed(regs)
 }
 
+fn handle_identity_query_exit(
+    syscall: u64,
+    regs: &mut nix::libc::user_regs_struct,
+) -> Option<bool> {
+    if matches!(syscall, SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID) {
+        regs.rax = 0;
+        return Some(true);
+    }
+    None
+}
+
+fn handle_permission_change_exit(
+    pid: Pid,
+    pid_raw: i32,
+    syscall: u64,
+    regs: &mut nix::libc::user_regs_struct,
+    state: &mut TracerState,
+) -> Option<bool> {
+    if matches!(syscall, SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT) {
+        return Some(force_success_if_failed(regs));
+    }
+
+    if matches!(syscall, SYS_CHMOD | SYS_FCHMODAT) {
+        return Some(handle_chmod_exit(pid, pid_raw, regs, state));
+    }
+
+    if syscall == SYS_FCHMOD {
+        return Some(handle_fchmod_exit(pid, pid_raw, regs, state));
+    }
+
+    None
+}
+
+fn handle_stat_query_exit(
+    pid: Pid,
+    pid_raw: i32,
+    syscall: u64,
+    regs: &nix::libc::user_regs_struct,
+    state: &mut TracerState,
+) -> Result<Option<bool>> {
+    if matches!(syscall, SYS_STAT | SYS_FSTAT | SYS_LSTAT | SYS_NEWFSTATAT) {
+        handle_stat_buffer_exit(pid, pid_raw, regs.rax, state)?;
+        return Ok(Some(false));
+    }
+
+    if syscall == SYS_STATX {
+        handle_statx_buffer_exit(pid, pid_raw, regs.rax, state)?;
+        return Ok(Some(false));
+    }
+
+    Ok(None)
+}
+
 fn handle_syscall_exit(
     pid: Pid,
     pid_raw: i32,
@@ -282,25 +335,19 @@ fn handle_syscall_exit(
     regs: &mut nix::libc::user_regs_struct,
     state: &mut TracerState,
 ) -> Result<bool> {
-    let modified = match syscall {
-        SYS_GETUID | SYS_GETEUID | SYS_GETGID | SYS_GETEGID => {
-            regs.rax = 0;
-            true
-        }
-        SYS_CHOWN | SYS_FCHOWN | SYS_LCHOWN | SYS_FCHOWNAT => force_success_if_failed(regs),
-        SYS_CHMOD | SYS_FCHMODAT => handle_chmod_exit(pid, pid_raw, regs, state),
-        SYS_FCHMOD => handle_fchmod_exit(pid, pid_raw, regs, state),
-        SYS_STAT | SYS_FSTAT | SYS_LSTAT | SYS_NEWFSTATAT => {
-            handle_stat_buffer_exit(pid, pid_raw, regs.rax, state)?;
-            false
-        }
-        SYS_STATX => {
-            handle_statx_buffer_exit(pid, pid_raw, regs.rax, state)?;
-            false
-        }
-        _ => false,
-    };
-    Ok(modified)
+    if let Some(modified) = handle_identity_query_exit(syscall, regs) {
+        return Ok(modified);
+    }
+
+    if let Some(modified) = handle_permission_change_exit(pid, pid_raw, syscall, regs, state) {
+        return Ok(modified);
+    }
+
+    if let Some(modified) = handle_stat_query_exit(pid, pid_raw, syscall, regs, state)? {
+        return Ok(modified);
+    }
+
+    Ok(false)
 }
 
 fn handle_syscall_entry(
