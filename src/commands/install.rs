@@ -42,15 +42,22 @@ fn handle_sync_update_error(err: alpm::Error, attempt: u32) -> Result<()> {
     Ok(())
 }
 
+fn sync_databases_attempt(handle: &mut Alpm, attempt: u32) -> Result<bool> {
+    match handle.syncdbs_mut().update(false) {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            handle_sync_update_error(err, attempt)?;
+            Ok(false)
+        }
+    }
+}
+
 /// Sync databases with retry logic for lock contention
 fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
     for attempt in 0..MAX_SYNC_RETRIES {
-        let update_result = handle.syncdbs_mut().update(false);
-        let Err(err) = update_result else {
+        if sync_databases_attempt(handle, attempt)? {
             return Ok(());
-        };
-
-        handle_sync_update_error(err, attempt)?;
+        }
     }
     Ok(())
 }
