@@ -284,6 +284,53 @@ fn reinstall_local_files_if_needed(force_reinstall_files: &[String]) -> Result<(
     force_reinstall_with_pacman(force_reinstall_files)
 }
 
+fn prepare_upgrade_transaction(handle: &mut Alpm) -> Result<()> {
+    handle
+        .trans_init(TransFlag::NONE)
+        .context("Failed to initialize transaction")?;
+
+    handle
+        .sync_sysupgrade(false)
+        .context("Failed to set up system upgrade")?;
+
+    println!(":: Resolving dependencies...");
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
+    if let Some(err) = prepare_err {
+        let _ = handle.trans_release();
+        bail!("Failed to prepare transaction: {}", err);
+    }
+
+    Ok(())
+}
+
+fn commit_upgrade_transaction(handle: &mut Alpm) -> Result<()> {
+    let to_add = handle.trans_add();
+    if to_add.is_empty() {
+        println!("System is up to date");
+        handle.trans_release().ok();
+        return Ok(());
+    }
+
+    println!("\nPackages to upgrade ({}):", to_add.len());
+    for pkg in to_add.iter() {
+        println!("  {} {}", pkg.name(), pkg.version());
+    }
+
+    println!("\n:: Proceeding with upgrade...");
+    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    if let Some(err) = commit_err {
+        let _ = handle.trans_release();
+        bail!("Failed to commit transaction: {}", err);
+    }
+
+    Ok(())
+}
+
+fn upgrade_system(handle: &mut Alpm) -> Result<()> {
+    prepare_upgrade_transaction(handle)?;
+    commit_upgrade_transaction(handle)
+}
+
 /// Install packages (always syncs and upgrades first for safety)
 pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     super::ensure_root()?;
@@ -316,40 +363,7 @@ pub fn upgrade() -> Result<()> {
     println!(":: Synchronizing package databases...");
     sync_databases_with_retry(&mut handle)?;
 
-    handle
-        .trans_init(TransFlag::NONE)
-        .context("Failed to initialize transaction")?;
-
-    handle
-        .sync_sysupgrade(false)
-        .context("Failed to set up system upgrade")?;
-
-    println!(":: Resolving dependencies...");
-    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
-    if let Some(err) = prepare_err {
-        let _ = handle.trans_release();
-        bail!("Failed to prepare transaction: {}", err);
-    }
-
-    let to_add = handle.trans_add();
-    if to_add.is_empty() {
-        println!("System is up to date");
-        handle.trans_release().ok();
-        return Ok(());
-    }
-
-    println!("\nPackages to upgrade ({}):", to_add.len());
-    for pkg in to_add.iter() {
-        println!("  {} {}", pkg.name(), pkg.version());
-    }
-
-    println!("\n:: Proceeding with upgrade...");
-    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
-    if let Some(err) = commit_err {
-        let _ = handle.trans_release();
-        bail!("Failed to commit transaction: {}", err);
-    }
-
+    upgrade_system(&mut handle)?;
     println!("Done!");
     Ok(())
 }
