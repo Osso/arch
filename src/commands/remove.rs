@@ -47,7 +47,11 @@ fn add_packages_to_removal_transaction(handle: &mut alpm::Alpm, packages: &[Stri
             .expect("Already verified package exists");
         if let Err(e) = handle.trans_remove_pkg(pkg) {
             let _ = handle.trans_release();
-            bail!("Failed to mark package for removal: {}: {:?}", name, e);
+            bail!(
+                "Failed to mark package for removal: {}: {}",
+                name,
+                super::describe_error(e)
+            );
         }
     }
     Ok(())
@@ -55,7 +59,7 @@ fn add_packages_to_removal_transaction(handle: &mut alpm::Alpm, packages: &[Stri
 
 fn prepare_removal_transaction(handle: &mut alpm::Alpm) -> Result<()> {
     println!(":: Checking dependencies...");
-    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(super::describe_error);
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
@@ -80,7 +84,7 @@ fn print_removal_candidates(handle: &mut alpm::Alpm, heading: &str) -> bool {
 
 fn commit_removal_transaction(handle: &mut alpm::Alpm) -> Result<()> {
     println!("\n:: Proceeding with removal...");
-    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(super::describe_error);
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
         bail!("Failed to commit transaction: {}", err);

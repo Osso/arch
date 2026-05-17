@@ -15,8 +15,7 @@ enum SyncAttemptOutcome {
 }
 
 fn is_lock_error(err: &alpm::Error) -> bool {
-    let err_str = format!("{:?}", err);
-    err_str.contains("lock") || err_str.contains("Lock")
+    err.to_string().to_lowercase().contains("lock")
 }
 
 fn is_last_sync_attempt(attempt: u32) -> bool {
@@ -186,7 +185,7 @@ fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<Vec<Stri
             continue;
         }
 
-        let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(|e| format!("{:?}", e));
+        let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(super::describe_error);
         if let Some(err) = add_err {
             let _ = handle.trans_release();
             bail!("Failed to add package {}: {}", file, err);
@@ -204,7 +203,7 @@ fn add_repo_packages(handle: &mut Alpm, repo_names: &[String]) -> Result<()> {
             .or_else(|| handle.syncdbs().find_satisfier(name.as_str()))
             .ok_or_else(|| anyhow::anyhow!("Package '{}' not found", name))?;
 
-        let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(|e| format!("{:?}", e));
+        let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(super::describe_error);
         if let Some(err) = add_err {
             let _ = handle.trans_release();
             bail!("Failed to add package {}: {}", name, err);
@@ -253,7 +252,7 @@ fn commit_transaction(
     force_reinstall_files: &[String],
     label: &str,
 ) -> Result<()> {
-    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(super::describe_error);
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
@@ -277,7 +276,7 @@ fn commit_transaction(
     }
 
     println!("\n:: Proceeding with {}...", label);
-    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(super::describe_error);
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
         bail!("Failed to commit transaction: {}", err);
@@ -317,7 +316,7 @@ fn prepare_upgrade_transaction(handle: &mut Alpm) -> Result<()> {
         .context("Failed to set up system upgrade")?;
 
     println!(":: Resolving dependencies...");
-    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(super::describe_error);
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
@@ -340,7 +339,7 @@ fn commit_upgrade_transaction(handle: &mut Alpm) -> Result<()> {
     }
 
     println!("\n:: Proceeding with upgrade...");
-    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(super::describe_error);
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
         bail!("Failed to commit transaction: {}", err);

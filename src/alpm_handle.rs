@@ -9,8 +9,7 @@ const MAX_LOCK_RETRIES: u32 = 5;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
 
 fn is_lock_error(err: &alpm::Error) -> bool {
-    let err_str = format!("{:?}", err);
-    err_str.contains("lock") || err_str.contains("Lock")
+    err.to_string().to_lowercase().contains("lock")
 }
 
 fn is_last_retry_attempt(attempt: u32) -> bool {

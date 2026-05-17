@@ -19,7 +19,7 @@ fn load_and_add_package(handle: &mut alpm::Alpm, pkg_file: &Path) -> Result<()> 
         .context("Failed to load package file")?;
     println!("  {} {}", pkg.name(), pkg.version());
 
-    let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(|e| format!("{:?}", e));
+    let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(super::describe_error);
     if let Some(err) = add_err {
         let _ = handle.trans_release();
         bail!("Failed to add package: {}", err);
@@ -28,7 +28,7 @@ fn load_and_add_package(handle: &mut alpm::Alpm, pkg_file: &Path) -> Result<()> 
 }
 
 fn prepare_build_transaction(handle: &mut alpm::Alpm) -> Result<()> {
-    let prepare_err: Option<String> = handle.trans_prepare().err().map(|e| format!("{:?}", e));
+    let prepare_err: Option<String> = handle.trans_prepare().err().map(super::describe_error);
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
         bail!("Failed to prepare transaction: {}", err);
@@ -37,7 +37,7 @@ fn prepare_build_transaction(handle: &mut alpm::Alpm) -> Result<()> {
 }
 
 fn commit_build_transaction(handle: &mut alpm::Alpm) -> Result<()> {
-    let commit_err: Option<String> = handle.trans_commit().err().map(|e| format!("{:?}", e));
+    let commit_err: Option<String> = handle.trans_commit().err().map(super::describe_error);
     if let Some(err) = commit_err {
         let _ = handle.trans_release();
         bail!("Failed to commit transaction: {}", err);
