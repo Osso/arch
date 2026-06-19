@@ -18,7 +18,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Install packages (always syncs and upgrades first)
+    /// Install packages (local installs are hermetic; never upgrades the system)
     #[command(visible_alias = "i")]
     Install {
         /// Package names to install

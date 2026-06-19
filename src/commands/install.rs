@@ -165,25 +165,15 @@ fn verify_repo_packages(handle: &Alpm, repo_names: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<Vec<String>> {
-    let mut force_reinstall = Vec::new();
+// Add local package files to the transaction. Same-version packages are
+// re-added (reinstall) in-process: the transaction uses TransFlag::NONE for
+// local files (see initialize_install_transaction), so alpm performs the
+// reinstall itself — no need to shell out to `pacman -U`.
+fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<()> {
     for file in local_files {
         let pkg = handle
             .pkg_load(file.as_str(), true, SigLevel::USE_DEFAULT)
             .with_context(|| format!("Failed to load package: {}", file))?;
-
-        let pkg_name = pkg.name().to_string();
-        let pkg_version = pkg.version();
-        let already_installed = handle
-            .localdb()
-            .pkg(pkg_name.as_str())
-            .map(|p| p.version() == pkg_version)
-            .unwrap_or(false);
-
-        if already_installed {
-            force_reinstall.push(file.clone());
-            continue;
-        }
 
         let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(super::describe_error);
         if let Some(err) = add_err {
@@ -191,7 +181,7 @@ fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<Vec<Stri
             bail!("Failed to add package {}: {}", file, err);
         }
     }
-    Ok(force_reinstall)
+    Ok(())
 }
 
 fn add_repo_packages(handle: &mut Alpm, repo_names: &[String]) -> Result<()> {
@@ -227,31 +217,23 @@ fn initialize_install_transaction(
         .context("Failed to initialize transaction")
 }
 
-fn install_targets(
-    handle: &mut Alpm,
-    targets: &InstallTargets,
-    reinstall: bool,
-) -> Result<Vec<String>> {
+fn install_targets(handle: &mut Alpm, targets: &InstallTargets, reinstall: bool) -> Result<()> {
     verify_repo_packages(handle, &targets.repo_names)?;
     initialize_install_transaction(handle, reinstall, targets.has_local_files())?;
 
-    let force_reinstall_files = add_local_files(handle, &targets.local_files)?;
+    add_local_files(handle, &targets.local_files)?;
     add_repo_packages(handle, &targets.repo_names)?;
 
-    handle
-        .sync_sysupgrade(false)
-        .context("Failed to set up system upgrade")?;
-
+    // Note: deliberately NOT calling sync_sysupgrade here. Installing specific
+    // packages must not upgrade the rest of the system; `arch upgrade` is the
+    // explicit entry point for that. Dependencies are still pulled in by
+    // trans_prepare's resolution below.
     println!(":: Resolving dependencies...");
-    commit_transaction(handle, &force_reinstall_files, "installation")?;
-    Ok(force_reinstall_files)
+    commit_transaction(handle, "installation")?;
+    Ok(())
 }
 
-fn commit_transaction(
-    handle: &mut Alpm,
-    force_reinstall_files: &[String],
-    label: &str,
-) -> Result<()> {
+fn commit_transaction(handle: &mut Alpm, label: &str) -> Result<()> {
     let prepare_err: Option<String> = handle.trans_prepare().err().map(super::describe_error);
     if let Some(err) = prepare_err {
         let _ = handle.trans_release();
@@ -259,13 +241,8 @@ fn commit_transaction(
     }
 
     let to_add = handle.trans_add();
-    if to_add.is_empty() && force_reinstall_files.is_empty() {
-        println!("Nothing to do - packages are up to date");
-        handle.trans_release().ok();
-        return Ok(());
-    }
-
     if to_add.is_empty() {
+        println!("Nothing to do - packages are up to date");
         handle.trans_release().ok();
         return Ok(());
     }
@@ -282,28 +259,6 @@ fn commit_transaction(
         bail!("Failed to commit transaction: {}", err);
     }
     Ok(())
-}
-
-fn force_reinstall_with_pacman(files: &[String]) -> Result<()> {
-    println!("\n:: Reinstalling {} package(s)...", files.len());
-    let mut cmd = std::process::Command::new("pacman");
-    cmd.arg("-U").arg("--noconfirm");
-    for file in files {
-        cmd.arg(file);
-    }
-    let status = cmd.status().context("Failed to run pacman")?;
-    if !status.success() {
-        bail!("pacman -U failed");
-    }
-    Ok(())
-}
-
-fn reinstall_local_files_if_needed(force_reinstall_files: &[String]) -> Result<()> {
-    if force_reinstall_files.is_empty() {
-        return Ok(());
-    }
-
-    force_reinstall_with_pacman(force_reinstall_files)
 }
 
 fn prepare_upgrade_transaction(handle: &mut Alpm) -> Result<()> {
@@ -362,17 +317,23 @@ fn install_packages(packages: &[String], reinstall: bool) -> Result<()> {
     let mut handle = alpm_handle::init()?;
     callbacks::register(&handle);
 
-    println!(":: Synchronizing package databases...");
-    sync_databases_with_retry(&mut handle)?;
+    // Only hit the network when we actually need repo metadata. A pure local
+    // install (e.g. `arch install .`) resolves deps against the sync DBs
+    // already on disk, so it stays hermetic — no sync, no DB signature check,
+    // and therefore unaffected by a flaky repo (e.g. cachyos).
+    if !targets.repo_names.is_empty() {
+        println!(":: Synchronizing package databases...");
+        sync_databases_with_retry(&mut handle)?;
+    }
 
-    let force_reinstall_files = install_targets(&mut handle, &targets, reinstall)?;
-    drop(handle);
-    reinstall_local_files_if_needed(&force_reinstall_files)?;
+    install_targets(&mut handle, &targets, reinstall)?;
     println!("Done!");
     Ok(())
 }
 
-/// Install packages (always syncs and upgrades first for safety)
+/// Install specific packages. Local packages install hermetically; repo
+/// packages trigger a DB sync first. Never performs a full system upgrade
+/// (use `arch upgrade` for that).
 pub fn run(packages: &[String], reinstall: bool) -> Result<()> {
     super::ensure_root()?;
     install_packages(packages, reinstall)
