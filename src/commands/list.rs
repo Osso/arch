@@ -9,18 +9,11 @@ pub fn upgradable() -> Result<()> {
     let mut found = false;
 
     for pkg in local_db.pkgs() {
-        // Check if there's a newer version in sync dbs
-        for sync_db in handle.syncdbs() {
-            if let Ok(sync_pkg) = sync_db.pkg(pkg.name()) {
-                if alpm::vercmp(sync_pkg.version().as_str(), pkg.version().as_str())
-                    == std::cmp::Ordering::Greater
-                {
-                    println!("{} {} -> {}", pkg.name(), pkg.version(), sync_pkg.version());
-                    found = true;
-                    break;
-                }
-            }
-        }
+        let Some(newer_version) = find_newer_sync_version(&handle, &pkg) else {
+            continue;
+        };
+        println!("{} {} -> {}", pkg.name(), pkg.version(), newer_version);
+        found = true;
     }
 
     if !found {
@@ -113,6 +106,20 @@ fn print_installed_package(name: &str, version: &str) {
     println!("{} {}", name, version);
 }
 
+fn find_newer_sync_version(handle: &alpm::Alpm, pkg: &alpm::Package) -> Option<String> {
+    for sync_db in handle.syncdbs() {
+        let Ok(sync_pkg) = sync_db.pkg(pkg.name()) else {
+            continue;
+        };
+        if alpm::vercmp(sync_pkg.version().as_str(), pkg.version().as_str())
+            == std::cmp::Ordering::Greater
+        {
+            return Some(sync_pkg.version().to_string());
+        }
+    }
+    None
+}
+
 fn search_exact_package(local_db: &alpm::Db, pattern: &str) -> bool {
     if let Ok(pkg) = local_db.pkg(pattern) {
         print_installed_package(pkg.name(), pkg.version().as_str());
@@ -122,23 +129,23 @@ fn search_exact_package(local_db: &alpm::Db, pattern: &str) -> bool {
 }
 
 fn search_packages_by_name(local_db: &alpm::Db, pattern: &str) -> bool {
-    let mut found = false;
-    let pattern_lower = pattern.to_lowercase();
-
-    for pkg in local_db.pkgs() {
-        if pkg.name().to_lowercase().contains(&pattern_lower) {
-            print_installed_package(pkg.name(), pkg.version().as_str());
-            found = true;
-        }
-    }
-
-    found
+    print_packages(local_db, Some(pattern))
 }
 
 fn list_all_installed_packages(local_db: &alpm::Db) -> bool {
+    print_packages(local_db, None)
+}
+
+fn print_packages(local_db: &alpm::Db, pattern: Option<&str>) -> bool {
     let mut found = false;
+    let pattern_lower = pattern.map(|p| p.to_lowercase());
 
     for pkg in local_db.pkgs() {
+        if let Some(ref pat) = pattern_lower {
+            if !pkg.name().to_lowercase().contains(pat) {
+                continue;
+            }
+        }
         print_installed_package(pkg.name(), pkg.version().as_str());
         found = true;
     }

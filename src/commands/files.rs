@@ -146,23 +146,29 @@ fn search_sync_providers(
             if installed_packages.contains(pkg.name()) {
                 continue;
             }
-
-            for file in pkg.files().files() {
-                let file_name = String::from_utf8_lossy(file.name());
-                if file_name.contains(search_pattern) {
-                    let source = format!("({})", db.name());
-                    print_provider_match(
-                        pkg.name(),
-                        pkg.version().as_str(),
-                        source.as_str(),
-                        &file_name,
-                    );
-                    found = true;
-                }
-            }
+            found |= search_sync_package_files(&pkg, db.name(), search_pattern);
         }
     }
 
+    found
+}
+
+fn search_sync_package_files(pkg: &alpm::Package, db_name: &str, search_pattern: &str) -> bool {
+    let mut found = false;
+    let source = format!("({})", db_name);
+    for file in pkg.files().files() {
+        let file_name = String::from_utf8_lossy(file.name());
+        if !file_name.contains(search_pattern) {
+            continue;
+        }
+        print_provider_match(
+            pkg.name(),
+            pkg.version().as_str(),
+            source.as_str(),
+            &file_name,
+        );
+        found = true;
+    }
     found
 }
 
