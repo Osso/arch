@@ -2,7 +2,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use crate::{alpm_handle, callbacks, pkgbuild};
+use crate::{alpm_handle, callbacks, deploy_capture, pkgbuild};
 use alpm::{Alpm, SigLevel, TransFlag};
 use anyhow::{bail, Context, Result};
 
@@ -72,9 +72,12 @@ fn sync_databases_with_retry(handle: &mut Alpm) -> Result<()> {
 }
 
 /// Categorize an argument as a directory, package file, or package name
+#[derive(Debug, PartialEq, Eq)]
 enum PackageSource {
     /// Directory containing PKGBUILD
     Directory(String),
+    /// Directory containing deploy.sh but no PKGBUILD
+    DeployDirectory(String),
     /// Local .pkg.tar.* file
     File(String),
     /// Package name from repos
@@ -84,6 +87,7 @@ enum PackageSource {
 struct InstallTargets {
     local_files: Vec<String>,
     repo_names: Vec<String>,
+    deploy_packages: Vec<deploy_capture::DeployPackage>,
 }
 
 impl InstallTargets {
@@ -94,6 +98,10 @@ impl InstallTargets {
     fn has_local_files(&self) -> bool {
         !self.local_files.is_empty()
     }
+
+    fn has_deploy_packages(&self) -> bool {
+        !self.deploy_packages.is_empty()
+    }
 }
 
 fn categorize_package(arg: &str) -> PackageSource {
@@ -102,6 +110,10 @@ fn categorize_package(arg: &str) -> PackageSource {
     // Check if it's a directory with PKGBUILD
     if path.is_dir() && path.join("PKGBUILD").exists() {
         return PackageSource::Directory(arg.to_string());
+    }
+
+    if path.is_dir() && path.join("deploy.sh").exists() {
+        return PackageSource::DeployDirectory(arg.to_string());
     }
 
     // Check if it's a package file
@@ -131,24 +143,44 @@ fn build_directories(directories: &[String], local_files: &mut Vec<String>) -> R
     Ok(())
 }
 
+fn build_deploy_directories(
+    directories: &[String],
+    deploy_packages: &mut Vec<deploy_capture::DeployPackage>,
+    local_files: &mut Vec<String>,
+) -> Result<()> {
+    for dir in directories {
+        let source_dir = std::fs::canonicalize(dir)
+            .with_context(|| format!("Failed to resolve path: {}", dir))?;
+        let package = deploy_capture::build_from_deploy_script(&source_dir)?;
+        local_files.push(package.path.to_string_lossy().to_string());
+        deploy_packages.push(package);
+    }
+    Ok(())
+}
+
 fn collect_install_targets(packages: &[String]) -> Result<InstallTargets> {
     let mut directories = Vec::new();
+    let mut deploy_directories = Vec::new();
+    let mut deploy_packages = Vec::new();
     let mut local_files = Vec::new();
     let mut repo_names = Vec::new();
 
     for arg in packages {
         match categorize_package(arg) {
             PackageSource::Directory(directory) => directories.push(directory),
+            PackageSource::DeployDirectory(directory) => deploy_directories.push(directory),
             PackageSource::File(file) => local_files.push(file),
             PackageSource::Name(name) => repo_names.push(name),
         }
     }
 
     build_directories(&directories, &mut local_files)?;
+    build_deploy_directories(&deploy_directories, &mut deploy_packages, &mut local_files)?;
 
     Ok(InstallTargets {
         local_files,
         repo_names,
+        deploy_packages,
     })
 }
 
@@ -174,6 +206,7 @@ fn add_local_files(handle: &mut Alpm, local_files: &[String]) -> Result<()> {
         let pkg = handle
             .pkg_load(file.as_str(), true, SigLevel::USE_DEFAULT)
             .with_context(|| format!("Failed to load package: {}", file))?;
+        ensure_package_paths_allowed(&pkg, file)?;
 
         let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(super::describe_error);
         if let Some(err) = add_err {
@@ -192,12 +225,22 @@ fn add_repo_packages(handle: &mut Alpm, repo_names: &[String]) -> Result<()> {
             .find_map(|db| db.pkg(name.as_str()).ok())
             .or_else(|| handle.syncdbs().find_satisfier(name.as_str()))
             .ok_or_else(|| anyhow::anyhow!("Package '{}' not found", name))?;
+        ensure_package_paths_allowed(pkg, name)?;
 
         let add_err: Option<String> = handle.trans_add_pkg(pkg).err().map(super::describe_error);
         if let Some(err) = add_err {
             let _ = handle.trans_release();
             bail!("Failed to add package {}: {}", name, err);
         }
+    }
+    Ok(())
+}
+
+fn ensure_package_paths_allowed(pkg: &alpm::Pkg, label: &str) -> Result<()> {
+    for file in pkg.files().files() {
+        let path = Path::new("/").join(String::from_utf8_lossy(file.name()).as_ref());
+        deploy_capture::assert_not_protected(&path)
+            .with_context(|| format!("Package {} contains protected path", label))?;
     }
     Ok(())
 }
@@ -219,6 +262,11 @@ fn initialize_install_transaction(
 
 fn install_targets(handle: &mut Alpm, targets: &InstallTargets, reinstall: bool) -> Result<()> {
     verify_repo_packages(handle, &targets.repo_names)?;
+    if targets.has_deploy_packages() {
+        handle
+            .add_overwrite_file("*")
+            .context("Failed to configure alpm overwrite for deploy package adoption")?;
+    }
     initialize_install_transaction(handle, reinstall, targets.has_local_files())?;
 
     add_local_files(handle, &targets.local_files)?;
@@ -352,4 +400,37 @@ pub fn upgrade() -> Result<()> {
     upgrade_system(&mut handle)?;
     println!("Done!");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn categorize_directory_with_pkgbuild_before_deploy_script() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("PKGBUILD"), "pkgname=test\n").unwrap();
+        fs::write(dir.path().join("deploy.sh"), "#!/bin/sh\n").unwrap();
+
+        let source = categorize_package(dir.path().to_str().unwrap());
+
+        assert_eq!(
+            source,
+            PackageSource::Directory(dir.path().to_string_lossy().to_string())
+        );
+    }
+
+    #[test]
+    fn categorize_directory_with_only_deploy_script_as_deploy_capture() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("deploy.sh"), "#!/bin/sh\n").unwrap();
+
+        let source = categorize_package(dir.path().to_str().unwrap());
+
+        assert_eq!(
+            source,
+            PackageSource::DeployDirectory(dir.path().to_string_lossy().to_string())
+        );
+    }
 }

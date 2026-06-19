@@ -12,12 +12,13 @@ nix = { version = "0.29", features = ["user", "ptrace", "process", "signal"] }
 libsystemd = "0.7"
 authd-escalate = { git = "https://github.com/Osso/authd" }
 walkdir = "2"
+jwalk = "0.8"
 flate2 = "1"
 tar = "0.4"
 sha2 = "0.10"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 
 [[bin]]
 name = "arch"

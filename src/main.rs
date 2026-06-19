@@ -1,8 +1,10 @@
 mod alpm_handle;
 mod callbacks;
 mod commands;
+mod deploy_capture;
 mod journal;
 mod pkgbuild;
+mod snapshot;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
