@@ -79,6 +79,34 @@ fn test_build_creates_package() {
 }
 
 #[test]
+fn test_build_returns_current_archive_when_stale_packages_exist() {
+    let dir = TempDir::new().unwrap();
+    let stale_package = dir.path().join("stale-package-0.0.0-1-any.pkg.tar.zst");
+    fs::write(&stale_package, "stale package").unwrap();
+    create_test_pkgbuild(dir.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_MAKEPKG_BIN", env!("CARGO_BIN_EXE_arch-makepkg"))
+        .arg("build")
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run arch build");
+
+    assert!(
+        output.status.success(),
+        "Build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let current_package = dir.path().join("test-package-1.0.0-1-x86_64.pkg.tar.zst");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!(":: Built {}", current_package.display())),
+        "build selected a stale archive instead: {stdout}"
+    );
+}
+
+#[test]
 fn test_build_package_metadata() {
     let dir = TempDir::new().unwrap();
     create_test_pkgbuild(dir.path());

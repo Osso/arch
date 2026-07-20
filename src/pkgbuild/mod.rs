@@ -12,10 +12,18 @@ pub fn build_package(source_dir: PathBuf, destdir: &Path) -> Result<PathBuf> {
         bail!("No PKGBUILD found in {}", source_dir.display());
     }
 
-    runner::build_in_sandbox(&source_dir, destdir)?;
+    let staging_dir = tempfile::tempdir().context("Failed to create package staging directory")?;
+    runner::build_in_sandbox(&source_dir, staging_dir.path())?;
 
-    // Find the created package
-    find_package(destdir)
+    let staged_package = find_package(staging_dir.path())?;
+    let package_name = staged_package
+        .file_name()
+        .context("Built package has no filename")?;
+    let output_path = destdir.join(package_name);
+    std::fs::copy(&staged_package, &output_path)
+        .with_context(|| format!("Failed to copy package to {}", output_path.display()))?;
+
+    Ok(output_path)
 }
 
 /// Find the .pkg.tar.zst file in destdir
