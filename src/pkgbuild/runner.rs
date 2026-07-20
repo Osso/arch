@@ -4,10 +4,7 @@ use anyhow::{Context, Result};
 
 use super::sandbox::Sandbox;
 
-/// Run PKGBUILD build in sandbox
-/// Returns path to created package (found by globbing destdir)
-pub fn build_in_sandbox(source_dir: &Path, dest_dir: &Path) -> Result<()> {
-    let script = r#"
+const BUILD_SCRIPT: &str = r#"
 set -e
 export srcdir="/src"
 export pkgdir="/tmp/pkg"
@@ -55,8 +52,8 @@ echo ':: Creating package...'
 env "${array_env[@]}" /usr/bin/arch-makepkg "$pkgdir" /dest
 "#;
 
+/// Run PKGBUILD build in sandbox.
+pub fn build_in_sandbox(source_dir: &Path, dest_dir: &Path) -> Result<()> {
     let sandbox = Sandbox::new(source_dir).with_dest_dir(dest_dir);
-    sandbox.run(script).context("Failed to build package")?;
-
-    Ok(())
+    sandbox.run(BUILD_SCRIPT).context("Failed to build package")
 }
