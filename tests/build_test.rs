@@ -129,6 +129,7 @@ pkgdesc="Metadata preservation test"
 arch=('any')
 license=('MIT')
 depends=('python' 'python-gobject' 'systemd')
+optdepends=('python: Optional Python support')
 
 package() {
     install -Dm644 /dev/null "$pkgdir/usr/share/test-metadata/marker"
@@ -137,6 +138,7 @@ package() {
     fs::write(dir.path().join("PKGBUILD"), pkgbuild).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_MAKEPKG_BIN", env!("CARGO_BIN_EXE_arch-makepkg"))
         .arg("build")
         .arg(dir.path())
         .output()
@@ -178,8 +180,32 @@ package() {
         .lines()
         .filter_map(|line| line.strip_prefix("depend = "))
         .collect();
+    let optional_dependencies: Vec<_> = pkginfo
+        .lines()
+        .filter_map(|line| line.strip_prefix("optdepend = "))
+        .collect();
     assert!(pkginfo.lines().any(|line| line == "arch = any"));
     assert_eq!(dependencies, ["python", "python-gobject", "systemd"]);
+    assert_eq!(optional_dependencies, ["python: Optional Python support"]);
+
+    let database = TempDir::new().unwrap();
+    let handle = alpm::Alpm::new("/", database.path().to_str().unwrap()).unwrap();
+    let package = handle
+        .pkg_load(pkg_file.to_str().unwrap(), true, alpm::SigLevel::NONE)
+        .unwrap();
+    let loaded_dependencies: Vec<_> = package.depends().iter().map(ToString::to_string).collect();
+    let loaded_optional_dependencies: Vec<_> = package
+        .optdepends()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+
+    assert_eq!(package.arch(), Some("any"));
+    assert_eq!(loaded_dependencies, ["python", "python-gobject", "systemd"]);
+    assert_eq!(
+        loaded_optional_dependencies,
+        ["python: Optional Python support"]
+    );
 }
 
 #[test]

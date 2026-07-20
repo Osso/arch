@@ -69,6 +69,22 @@ fn add_system_mounts(cmd: &mut Command) {
     add_ro_bind_if_exists(cmd, "/var/lib/pacman", "/var/lib/pacman");
 }
 
+fn add_matching_makepkg_bind(cmd: &mut Command) {
+    let makepkg = std::env::var_os("ARCH_MAKEPKG_BIN")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::current_exe()
+                .ok()?
+                .parent()
+                .map(|binary_dir| binary_dir.join("arch-makepkg"))
+        });
+    if let Some(makepkg) = makepkg.filter(|path| path.exists()) {
+        cmd.arg("--ro-bind")
+            .arg(makepkg)
+            .arg("/usr/bin/arch-makepkg");
+    }
+}
+
 fn add_runtime_mounts(cmd: &mut Command) {
     cmd.args(["--dev", "/dev"]);
     cmd.args(["--proc", "/proc"]);
@@ -106,6 +122,7 @@ impl<'a> Sandbox<'a> {
 
         add_system_mounts(&mut cmd);
         add_runtime_mounts(&mut cmd);
+        add_matching_makepkg_bind(&mut cmd);
         bind_build_directories(&mut cmd, self.source_dir, self.dest_dir);
         add_execution_options(&mut cmd);
 

@@ -43,7 +43,7 @@ fn create_package(pkgdir: &Path, destdir: &Path) -> Result<PathBuf> {
     let pkgname = env::var("pkgname").context("pkgname not set")?;
     let pkgver = env::var("pkgver").context("pkgver not set")?;
     let pkgrel = env::var("pkgrel").context("pkgrel not set")?;
-    let arch = env::var("arch").unwrap_or_else(|_| env::consts::ARCH.to_string());
+    let arch = pkginfo::package_arch();
 
     // Handle install script if specified
     if let Ok(install_file) = env::var("install") {

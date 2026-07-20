@@ -41,16 +41,27 @@ fn get_optional_env(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
 
+const ARRAY_SEPARATOR: char = '\u{1f}';
+
 fn get_array_env(name: &str) -> Vec<String> {
-    env::var(name)
+    env::var(format!("ARCH_PKG_ARRAY_{}", name))
         .ok()
         .map(|value| {
             value
-                .split_whitespace()
+                .split(ARRAY_SEPARATOR)
+                .filter(|item| !item.is_empty())
                 .map(|item| item.to_string())
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn get_first_array_env(name: &str) -> Option<String> {
+    get_array_env(name).into_iter().next()
+}
+
+pub fn package_arch() -> String {
+    get_first_array_env("arch").unwrap_or_else(|| env::consts::ARCH.to_string())
 }
 
 fn append_optional_field(
@@ -127,7 +138,7 @@ pub fn generate_pkginfo(size: u64) -> Result<String> {
     append_pkg_version(&mut content, &pkgver, &pkgrel, get_optional_env("epoch"))?;
     append_optional_field(&mut content, "pkgdesc", get_optional_env("pkgdesc"))?;
     append_optional_field(&mut content, "url", get_optional_env("url"))?;
-    append_build_metadata(&mut content, size, get_optional_env("arch"))?;
+    append_build_metadata(&mut content, size, Some(package_arch()))?;
     append_dependency_fields(&mut content)?;
 
     Ok(content)
@@ -169,9 +180,9 @@ mod tests {
         env::set_var("pkgver", "1.0.0");
         env::set_var("pkgrel", "1");
         env::set_var("pkgdesc", "A test package");
-        env::set_var("arch", "x86_64");
-        env::set_var("depends", "glibc openssl");
-        env::set_var("license", "MIT");
+        env::set_var("ARCH_PKG_ARRAY_arch", "x86_64");
+        env::set_var("ARCH_PKG_ARRAY_depends", "glibc\u{1f}openssl");
+        env::set_var("ARCH_PKG_ARRAY_license", "MIT");
 
         let content = generate_pkginfo(12345).unwrap();
 
@@ -189,8 +200,8 @@ mod tests {
         env::remove_var("pkgver");
         env::remove_var("pkgrel");
         env::remove_var("pkgdesc");
-        env::remove_var("arch");
-        env::remove_var("depends");
-        env::remove_var("license");
+        env::remove_var("ARCH_PKG_ARRAY_arch");
+        env::remove_var("ARCH_PKG_ARRAY_depends");
+        env::remove_var("ARCH_PKG_ARRAY_license");
     }
 }

@@ -24,14 +24,15 @@ source PKGBUILD
 export pkgname pkgbase pkgver pkgrel epoch
 export pkgdesc url install
 
-serialize_array() {
+append_array_env() {
     local name="$1"
     local -n values="$name"
-    local serialized="${values[*]}"
-    unset -n values
-    unset "$name"
-    printf -v "$name" '%s' "$serialized"
-    export "$name"
+    local serialized=""
+    local value
+    for value in "${values[@]}"; do
+        serialized+="${value}"$'\x1f'
+    done
+    array_env+=("ARCH_PKG_ARRAY_${name}=${serialized%$'\x1f'}")
 }
 
 # Run build functions if they exist
@@ -41,15 +42,17 @@ type check &>/dev/null && { echo ':: Running check()...'; check; }
 echo ':: Running package()...'
 package
 
-# Bash cannot export arrays. Convert them only after the PKGBUILD functions
+# Bash cannot export arrays. Serialize them only after the PKGBUILD functions
 # have run, so package scripts still see the original arrays.
+array_env=()
 for array_name in arch license depends makedepends checkdepends optdepends provides conflicts replaces backup; do
-    serialize_array "$array_name"
+    append_array_env "$array_name"
 done
 
-# Create package
+# Create package with array metadata passed as explicit scalar environment
+# assignments, preserving spaces inside individual elements.
 echo ':: Creating package...'
-arch-makepkg "$pkgdir" /dest
+env "${array_env[@]}" /usr/bin/arch-makepkg "$pkgdir" /dest
 "#;
 
     let sandbox = Sandbox::new(source_dir).with_dest_dir(dest_dir);
