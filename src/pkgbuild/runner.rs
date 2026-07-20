@@ -20,11 +20,19 @@ mkdir -p "$pkgdir"
 cd /src
 source PKGBUILD
 
-# Export all PKGBUILD variables for arch-makepkg
+# Export scalar PKGBUILD metadata for arch-makepkg.
 export pkgname pkgbase pkgver pkgrel epoch
-export pkgdesc url arch license install
-export depends makedepends checkdepends optdepends
-export provides conflicts replaces backup
+export pkgdesc url install
+
+serialize_array() {
+    local name="$1"
+    local -n values="$name"
+    local serialized="${values[*]}"
+    unset -n values
+    unset "$name"
+    printf -v "$name" '%s' "$serialized"
+    export "$name"
+}
 
 # Run build functions if they exist
 type prepare &>/dev/null && { echo ':: Running prepare()...'; prepare; }
@@ -32,6 +40,12 @@ type build &>/dev/null && { echo ':: Running build()...'; build; }
 type check &>/dev/null && { echo ':: Running check()...'; check; }
 echo ':: Running package()...'
 package
+
+# Bash cannot export arrays. Convert them only after the PKGBUILD functions
+# have run, so package scripts still see the original arrays.
+for array_name in arch license depends makedepends checkdepends optdepends provides conflicts replaces backup; do
+    serialize_array "$array_name"
+done
 
 # Create package
 echo ':: Creating package...'

@@ -119,6 +119,70 @@ fn test_build_package_metadata() {
 }
 
 #[test]
+fn test_build_preserves_array_metadata_for_install() {
+    let dir = TempDir::new().unwrap();
+    let pkgbuild = r##"
+pkgname=test-metadata
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Metadata preservation test"
+arch=('any')
+license=('MIT')
+depends=('python' 'python-gobject' 'systemd')
+
+package() {
+    install -Dm644 /dev/null "$pkgdir/usr/share/test-metadata/marker"
+}
+"##;
+    fs::write(dir.path().join("PKGBUILD"), pkgbuild).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_arch"))
+        .arg("build")
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run arch build");
+
+    assert!(
+        output.status.success(),
+        "Build failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pkg_file = dir.path().join("test-metadata-1.0.0-1-any.pkg.tar.zst");
+    assert!(
+        pkg_file.exists(),
+        "architecture-specific package was built instead"
+    );
+
+    let zstd_output = Command::new("zstd")
+        .args(["-d", "-c"])
+        .arg(&pkg_file)
+        .output()
+        .unwrap();
+    assert!(zstd_output.status.success());
+
+    let mut archive = tar::Archive::new(&zstd_output.stdout[..]);
+    let pkginfo = archive
+        .entries()
+        .unwrap()
+        .map(Result::unwrap)
+        .find(|entry| entry.path().unwrap().to_str() == Some(".PKGINFO"))
+        .map(|mut entry| {
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut content).unwrap();
+            content
+        })
+        .expect(".PKGINFO not found");
+
+    let dependencies: Vec<_> = pkginfo
+        .lines()
+        .filter_map(|line| line.strip_prefix("depend = "))
+        .collect();
+    assert!(pkginfo.lines().any(|line| line == "arch = any"));
+    assert_eq!(dependencies, ["python", "python-gobject", "systemd"]);
+}
+
+#[test]
 fn test_build_preserves_permissions() {
     let dir = TempDir::new().unwrap();
 
