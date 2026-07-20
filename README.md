@@ -22,7 +22,7 @@ arch install .
 
 ## Local package sources
 
-`arch install <directory>` builds a directory containing `PKGBUILD` in the sandbox and installs the resulting package without syncing repositories. Supported PKGBUILD arrays—`arch`, `license`, `depends`, `makedepends`, `checkdepends`, `optdepends`, `provides`, `conflicts`, `replaces`, and `backup`—retain element boundaries, including spaces within individual elements, when passed into package creation. `arch=('any')` remains architecture-independent; otherwise the current host architecture is selected when listed, and the first declared architecture is used when it is not.
+`arch install <directory>` builds a directory containing `PKGBUILD` in the sandbox, copies the archive produced by that build into the directory, and installs that current archive without syncing repositories; stale package archives already in the directory are ignored. Supported PKGBUILD arrays—`arch`, `license`, `depends`, `makedepends`, `checkdepends`, `optdepends`, `provides`, `conflicts`, `replaces`, and `backup`—retain element boundaries, including spaces within individual elements, when passed into package creation. `arch=('any')` remains architecture-independent; otherwise the current host architecture is selected when listed, and the first declared architecture is used when it is not.
 
 A directory without `PKGBUILD` but with `deploy.sh` is also supported: `arch install <directory>` runs the script, captures files written to supported install roots, synthesizes a local package, and installs it through ALPM. If both files exist, `PKGBUILD` takes precedence.
 
