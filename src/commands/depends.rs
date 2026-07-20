@@ -48,7 +48,7 @@ pub fn needs(package: &str) -> Result<()> {
 
     if let Ok(pkg) = handle.localdb().pkg(package) {
         println!("Dependencies for {} {}:", pkg.name(), pkg.version());
-        print_local_pkg_deps(&handle, &pkg);
+        print_local_pkg_deps(&handle, pkg);
         return Ok(());
     }
 
@@ -60,7 +60,7 @@ pub fn needs(package: &str) -> Result<()> {
                 pkg.version(),
                 db.name()
             );
-            print_sync_pkg_deps(&pkg);
+            print_sync_pkg_deps(pkg);
             return Ok(());
         }
     }

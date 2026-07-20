@@ -103,13 +103,13 @@ mod tests {
         let b = root.join("sub/b.txt");
         fs::write(&a, "one").unwrap();
 
-        let before = Snapshot::capture(&[root.clone()], &[]);
+        let before = Snapshot::capture(std::slice::from_ref(&root), &[]);
 
         fs::create_dir_all(root.join("sub")).unwrap();
         fs::write(&b, "new file").unwrap(); // created
         fs::write(&a, "one-changed-longer").unwrap(); // modified (size+mtime)
 
-        let after = Snapshot::capture(&[root.clone()], &[]);
+        let after = Snapshot::capture(std::slice::from_ref(&root), &[]);
         let changed = after.added_or_changed(&before);
 
         assert!(changed.contains(&a), "modified file should be in diff");
@@ -123,9 +123,9 @@ mod tests {
         let cache = root.join("cache");
         fs::create_dir_all(&cache).unwrap();
 
-        let before = Snapshot::capture(&[root.clone()], &[cache.clone()]);
+        let before = Snapshot::capture(std::slice::from_ref(&root), std::slice::from_ref(&cache));
         fs::write(cache.join("junk.tmp"), "noise").unwrap();
-        let after = Snapshot::capture(&[root.clone()], &[cache.clone()]);
+        let after = Snapshot::capture(std::slice::from_ref(&root), std::slice::from_ref(&cache));
 
         assert!(
             after.added_or_changed(&before).is_empty(),

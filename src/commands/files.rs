@@ -146,7 +146,7 @@ fn search_sync_providers(
             if installed_packages.contains(pkg.name()) {
                 continue;
             }
-            found |= search_sync_package_files(&pkg, db.name(), search_pattern);
+            found |= search_sync_package_files(pkg, db.name(), search_pattern);
         }
     }
 

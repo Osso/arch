@@ -9,7 +9,7 @@ pub fn upgradable() -> Result<()> {
     let mut found = false;
 
     for pkg in local_db.pkgs() {
-        let Some(newer_version) = find_newer_sync_version(&handle, &pkg) else {
+        let Some(newer_version) = find_newer_sync_version(&handle, pkg) else {
             continue;
         };
         println!("{} {} -> {}", pkg.name(), pkg.version(), newer_version);
