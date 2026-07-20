@@ -56,12 +56,19 @@ fn get_array_env(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn get_first_array_env(name: &str) -> Option<String> {
-    get_array_env(name).into_iter().next()
-}
-
 pub fn package_arch() -> String {
-    get_first_array_env("arch").unwrap_or_else(|| env::consts::ARCH.to_string())
+    let architectures = get_array_env("arch");
+    if architectures.iter().any(|arch| arch == "any") {
+        return "any".to_string();
+    }
+
+    let host_arch = env::consts::ARCH;
+    architectures
+        .iter()
+        .find(|arch| arch.as_str() == host_arch)
+        .cloned()
+        .or_else(|| architectures.into_iter().next())
+        .unwrap_or_else(|| host_arch.to_string())
 }
 
 fn append_optional_field(

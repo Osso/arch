@@ -209,6 +209,68 @@ package() {
 }
 
 #[test]
+fn test_build_selects_current_host_from_multi_arch_array() {
+    for (pkgname, architectures) in [
+        ("test-arch-host-first", "'x86_64' 'aarch64'"),
+        ("test-arch-host-last", "'aarch64' 'x86_64'"),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let pkgbuild = format!(
+            r##"
+pkgname={pkgname}
+pkgver=1.0.0
+pkgrel=1
+arch=({architectures})
+
+package() {{
+    install -Dm644 /dev/null "$pkgdir/usr/share/{pkgname}/marker"
+}}
+"##
+        );
+        fs::write(dir.path().join("PKGBUILD"), pkgbuild).unwrap();
+
+        let output = Command::new(env!("CARGO_BIN_EXE_arch"))
+            .env("ARCH_MAKEPKG_BIN", env!("CARGO_BIN_EXE_arch-makepkg"))
+            .arg("build")
+            .arg(dir.path())
+            .output()
+            .expect("Failed to run arch build");
+        assert!(
+            output.status.success(),
+            "Build failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let pkg_file = dir
+            .path()
+            .join(format!("{pkgname}-1.0.0-1-x86_64.pkg.tar.zst"));
+        assert!(
+            pkg_file.exists(),
+            "current host architecture was not selected"
+        );
+
+        let zstd_output = Command::new("zstd")
+            .args(["-d", "-c"])
+            .arg(&pkg_file)
+            .output()
+            .unwrap();
+        let mut archive = tar::Archive::new(&zstd_output.stdout[..]);
+        let pkginfo = archive
+            .entries()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| entry.path().unwrap().to_str() == Some(".PKGINFO"))
+            .map(|mut entry| {
+                let mut content = String::new();
+                std::io::Read::read_to_string(&mut entry, &mut content).unwrap();
+                content
+            })
+            .expect(".PKGINFO not found");
+        assert!(pkginfo.lines().any(|line| line == "arch = x86_64"));
+    }
+}
+
+#[test]
 fn test_build_preserves_permissions() {
     let dir = TempDir::new().unwrap();
 
