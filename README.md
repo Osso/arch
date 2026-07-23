@@ -28,6 +28,20 @@ Cargo PKGBUILD builds detect a `Cargo.toml`, expose the invoking user's Cargo `r
 
 A directory without `PKGBUILD` but with `deploy.sh` is also supported: `arch install <directory>` runs the script, captures files written to supported install roots, synthesizes a local package, and installs it through ALPM. If both files exist, `PKGBUILD` takes precedence.
 
+## Testing
+
+Run the full formatting, clippy, and test checks with:
+
+```bash
+./run-tests.sh
+```
+
+Run selective unit tests with:
+
+```bash
+./run-tests.sh unit <filter>
+```
+
 ## Usage
 
 ```bash
