@@ -1,7 +1,8 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
+use walkdir::WalkDir;
 
 use super::fakeroot::run_sandboxed_with_fakeroot;
 
@@ -35,6 +36,51 @@ fn add_ro_bind_if_exists(cmd: &mut Command, source: &str, destination: &str) {
     if Path::new(source).exists() {
         cmd.args(["--ro-bind", source, destination]);
     }
+}
+
+fn cargo_home() -> Option<PathBuf> {
+    std::env::var_os("CARGO_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .map(|home| home.join(".cargo"))
+        })
+}
+
+fn source_contains_cargo_manifest(source_dir: &Path) -> bool {
+    WalkDir::new(source_dir)
+        .into_iter()
+        .filter_entry(|entry| {
+            !matches!(entry.file_name().to_str(), Some(".git" | "pkg" | "target"))
+        })
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_type().is_file() && entry.file_name() == "Cargo.toml")
+}
+
+fn add_cargo_cache_mounts(cmd: &mut Command, source_dir: &Path) {
+    if !source_contains_cargo_manifest(source_dir) {
+        return;
+    }
+    let Some(host_cargo_home) = cargo_home() else {
+        return;
+    };
+
+    let sandbox_cargo_home = Path::new("/tmp/arch-cargo-home");
+    cmd.arg("--dir").arg(sandbox_cargo_home);
+    for cache_name in ["registry", "git"] {
+        let host_cache = host_cargo_home.join(cache_name);
+        if host_cache.exists() {
+            let sandbox_cache = sandbox_cargo_home.join(cache_name);
+            cmd.arg("--ro-bind").arg(host_cache).arg(sandbox_cache);
+        }
+    }
+    cmd.arg("--setenv")
+        .arg("CARGO_HOME")
+        .arg(sandbox_cargo_home);
+    cmd.args(["--setenv", "CARGO_NET_OFFLINE", "true"]);
 }
 
 fn add_rustup_bind(cmd: &mut Command) {
@@ -85,16 +131,18 @@ fn add_matching_makepkg_bind(cmd: &mut Command) {
     }
 }
 
-fn add_runtime_mounts(cmd: &mut Command) {
+fn add_runtime_mounts(cmd: &mut Command, source_dir: &Path) {
     cmd.args(["--dev", "/dev"]);
     cmd.args(["--proc", "/proc"]);
     cmd.args(["--tmpfs", "/tmp"]);
     cmd.args(["--tmpfs", "/home"]);
     add_rustup_bind(cmd);
+    add_cargo_cache_mounts(cmd, source_dir);
 }
 
 fn add_execution_options(cmd: &mut Command) {
     cmd.args(["--chdir", "/src"]);
+    cmd.arg("--unshare-net");
     cmd.arg("--die-with-parent");
 }
 
@@ -121,7 +169,7 @@ impl<'a> Sandbox<'a> {
         let mut cmd = Command::new("bwrap");
 
         add_system_mounts(&mut cmd);
-        add_runtime_mounts(&mut cmd);
+        add_runtime_mounts(&mut cmd, self.source_dir);
         add_matching_makepkg_bind(&mut cmd);
         bind_build_directories(&mut cmd, self.source_dir, self.dest_dir);
         add_execution_options(&mut cmd);
@@ -133,5 +181,24 @@ impl<'a> Sandbox<'a> {
         let bwrap_cmd = self.build_bwrap_command();
         run_sandboxed_with_fakeroot(bwrap_cmd, script).context("Sandboxed command failed")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    fn command_args(command: &Command) -> Vec<OsString> {
+        command.get_args().map(|arg| arg.to_os_string()).collect()
+    }
+
+    #[test]
+    fn sandbox_network_is_disabled() {
+        let mut command = Command::new("bwrap");
+
+        add_execution_options(&mut command);
+
+        assert!(command_args(&command).contains(&OsString::from("--unshare-net")));
     }
 }

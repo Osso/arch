@@ -28,6 +28,74 @@ package() {
 }
 
 #[test]
+fn test_builds_rust_package_from_host_cargo_cache() {
+    let dir = TempDir::new().unwrap();
+    let src_dir = dir.path().join("src");
+    fs::create_dir(&src_dir).unwrap();
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "rust-cache-package"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+authd-escalate = { git = "https://github.com/Osso/authd" }
+"#,
+    )
+    .unwrap();
+    fs::write(src_dir.join("main.rs"), "fn main() {}\n").unwrap();
+    let lock = Command::new("cargo")
+        .args(["generate-lockfile", "--offline"])
+        .current_dir(dir.path())
+        .output()
+        .expect("Failed to generate Cargo.lock");
+    assert!(
+        lock.status.success(),
+        "Cargo.lock generation failed: {}",
+        String::from_utf8_lossy(&lock.stderr)
+    );
+    fs::write(
+        dir.path().join("PKGBUILD"),
+        r#"pkgname=rust-cache-package
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Rust cache sandbox test"
+arch=('x86_64')
+license=('MIT')
+makedepends=('cargo')
+
+build() {
+    cargo build --release --locked --offline
+}
+
+package() {
+    install -Dm755 target/release/rust-cache-package "$pkgdir/usr/bin/rust-cache-package"
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_arch"))
+        .env("ARCH_MAKEPKG_BIN", env!("CARGO_BIN_EXE_arch-makepkg"))
+        .arg("build")
+        .arg(dir.path())
+        .output()
+        .expect("Failed to run arch build");
+
+    assert!(
+        output.status.success(),
+        "Rust package build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(dir
+        .path()
+        .join("rust-cache-package-0.1.0-1-x86_64.pkg.tar.zst")
+        .exists());
+}
+
+#[test]
 fn test_build_creates_package() {
     let dir = TempDir::new().unwrap();
     create_test_pkgbuild(dir.path());
